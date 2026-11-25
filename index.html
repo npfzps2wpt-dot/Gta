@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>نيون سيتي</title>
+<style>
+  :root{--pink:#ff3ca8;--cyan:#2ef3ff;--gold:#ffd23c;--bg:#0a0618}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:#fff;user-select:none}
+  canvas#view{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #hud{position:fixed;inset:0;pointer-events:none;display:none}
+  #hud.on{display:block}
+  .panel{position:absolute;text-shadow:0 2px 6px #000}
+  #topright{top:14px;left:18px;text-align:left;direction:ltr}
+  #cash{font:900 34px/1 'Impact','Arial Black',sans-serif;color:#7dff7d;letter-spacing:1px;text-shadow:0 0 10px #0f0,0 3px 0 #040}
+  #clock{font:700 18px sans-serif;color:var(--cyan);margin-top:4px}
+  .bar{width:210px;height:12px;background:#0008;border:2px solid #fff6;border-radius:3px;margin-top:6px;overflow:hidden}
+  .bar>i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#ff2a5f,#ff7a3c)}
+  #wanted{font-size:30px;margin-top:6px;letter-spacing:3px;color:#fff3}
+  #wanted b{color:#fff}
+  #wanted.flash b{animation:fl .35s infinite alternate;color:#4aa3ff}
+  @keyframes fl{to{color:#ff3b3b}}
+  #weapon{margin-top:8px;font:700 18px sans-serif;color:var(--gold)}
+  #minimapwrap{left:18px;bottom:18px;width:210px;height:210px;border-radius:50%;border:4px solid #fff;box-shadow:0 0 0 3px #000a,0 0 22px #000a;overflow:hidden;background:#123}
+  #minimap{width:100%;height:100%;display:block}
+  #speed{right:22px;bottom:20px;font:900 54px/1 'Impact','Arial Black',sans-serif;color:#fff;text-shadow:0 0 14px var(--pink),0 4px 0 #000;display:none;direction:ltr}
+  #speed small{font-size:18px;color:var(--cyan)}
+  #carhp{right:22px;bottom:84px;width:160px;display:none}
+  #mission{top:14px;left:50%;transform:translateX(-50%);text-align:center;max-width:46vw}
+  #mission .t{font:900 20px sans-serif;color:var(--gold)}
+  #mission .d{font:600 16px sans-serif;margin-top:2px}
+  #toast{bottom:90px;left:50%;transform:translateX(-50%);font:800 22px sans-serif;text-align:center;opacity:0;transition:opacity .25s;max-width:70vw;background:#0009;padding:8px 18px;border-radius:6px;border:1px solid #fff3}
+  #toast.on{opacity:1}
+  #prompt{bottom:150px;left:50%;transform:translateX(-50%);font:700 20px sans-serif;color:var(--cyan);display:none;background:#0008;padding:6px 16px;border-radius:6px}
+  #cross{position:fixed;left:50%;top:50%;width:22px;height:22px;margin:-11px;border:2px solid #fff;border-radius:50%;opacity:.0;box-shadow:0 0 6px #000}
+  #cross::after{content:'';position:absolute;left:50%;top:50%;width:4px;height:4px;margin:-2px;background:#fff;border-radius:50%}
+  #cross.on{opacity:.85}
+  #dmg{position:fixed;inset:0;pointer-events:none;background:radial-gradient(transparent 40%,#f00 130%);opacity:0;transition:opacity .25s}
+  #big{position:fixed;inset:0;display:none;align-items:center;justify-content:center;pointer-events:none;background:#0006}
+  #big span{font:900 clamp(48px,10vw,120px)/1 'Impact','Arial Black',sans-serif;color:#d11;text-shadow:0 0 30px #f00,0 6px 0 #400;letter-spacing:4px}
+  #big.win span{color:var(--gold);text-shadow:0 0 30px #fa0,0 6px 0 #430}
+  #menu{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(180deg,#14062e 0%,#5a1470 38%,#ff4f8b 70%,#ffb347 100%);z-index:9}
+  #menu::before{content:'';position:absolute;left:0;right:0;bottom:0;height:34%;
+    background:repeating-linear-gradient(90deg,#0b0420 0 40px,#14062e 40px 64px);clip-path:polygon(0 60%,6% 40%,6% 55%,14% 25%,14% 50%,22% 35%,22% 60%,31% 10%,31% 45%,40% 30%,40% 55%,50% 15%,50% 50%,58% 38%,58% 60%,68% 20%,68% 48%,78% 30%,78% 55%,88% 8%,88% 45%,100% 35%,100% 100%,0 100%);opacity:.95}
+  .card{position:relative;z-index:2;text-align:center;max-width:760px;padding:26px 34px;background:#0a0618cc;border:2px solid var(--pink);border-radius:14px;box-shadow:0 0 40px #ff3ca880,inset 0 0 30px #2ef3ff30;max-height:94vh;overflow:auto}
+  h1{font:900 clamp(40px,8vw,84px)/1.1 'Impact','Arial Black',sans-serif;color:#fff;text-shadow:0 0 12px var(--pink),0 0 34px var(--pink),4px 4px 0 #6a0f7a}
+  h1 em{font-style:normal;color:var(--cyan);text-shadow:0 0 12px var(--cyan),0 0 34px var(--cyan),4px 4px 0 #064}
+  .sub{margin:6px 0 16px;color:#ffd6ec;font-size:17px}
+  .keys{display:grid;grid-template-columns:1fr 1fr;gap:6px 22px;text-align:right;font-size:15px;margin:10px 0 18px}
+  .keys div{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #fff2;padding:3px 0}
+  kbd{background:#fff;color:#111;border-radius:4px;padding:1px 7px;font:700 13px monospace;direction:ltr;box-shadow:0 2px 0 #888}
+  button{font:900 24px sans-serif;color:#fff;background:linear-gradient(180deg,var(--pink),#b3126d);border:0;border-radius:8px;padding:12px 44px;cursor:pointer;box-shadow:0 5px 0 #6a0f4a,0 0 20px #ff3ca8aa;pointer-events:auto}
+  button:hover{filter:brightness(1.15)}
+  #pause{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#000a;z-index:8}
+  #loading{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#0a0618;z-index:20;font:800 28px sans-serif;color:var(--cyan)}
+  @media (max-width:760px){.keys{grid-template-columns:1fr}#minimapwrap{width:140px;height:140px}}
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud">
+  <div class="panel" id="topright">
+    <div id="cash">$0</div>
+    <div id="clock">12:00</div>
+    <div class="bar"><i id="hp"></i></div>
+    <div id="wanted">★★★★★</div>
+    <div id="weapon"></div>
+  </div>
+  <div class="panel" id="mission"><div class="t"></div><div class="d"></div></div>
+  <div class="panel" id="toast"></div>
+  <div class="panel" id="prompt"></div>
+  <div class="panel" id="minimapwrap"><canvas id="minimap" width="420" height="420"></canvas></div>
+  <div class="panel" id="speed"><span id="spd">0</span> <small>km/h</small></div>
+  <div class="panel bar" id="carhp"><i id="carhpbar"></i></div>
+</div>
+<div id="cross"></div>
+<div id="dmg"></div>
+<div id="big"><span id="bigtxt"></span></div>
+
+<div id="pause"><div class="card"><h1 style="font-size:48px">متوقفة <em>مؤقتاً</em></h1><p class="sub">انقر للمتابعة</p><button id="resume">متابعة</button></div></div>
+<div id="loading">جارٍ بناء المدينة…</div>
+
+<div id="menu">
+  <div class="card">
+    <h1>نيون <em>سيتي</em></h1>
+    <p class="sub">مدينة مفتوحة على شاطئ مشمس… اسرق، اركض، اهرب من الشرطة، ونفّذ المهمات.</p>
+    <div class="keys">
+      <div><span>الحركة</span><kbd>W A S D</kbd></div>
+      <div><span>الجري</span><kbd>Shift</kbd></div>
+      <div><span>القفز / فرامل اليد</span><kbd>Space</kbd></div>
+      <div><span>ركوب / نزول من السيارة</span><kbd>F</kbd></div>
+      <div><span>إطلاق النار / لكمة</span><kbd>زر الفأرة الأيسر</kbd></div>
+      <div><span>تصويب (تقريب)</span><kbd>زر الفأرة الأيمن</kbd></div>
+      <div><span>تبديل السلاح</span><kbd>1 2 3 4</kbd> / <kbd>العجلة</kbd></div>
+      <div><span>منبّه السيارة</span><kbd>H</kbd></div>
+      <div><span>الموسيقى</span><kbd>M</kbd></div>
+      <div><span>الخريطة / المهمة</span><kbd>الدوائر الصفراء</kbd></div>
+    </div>
+    <button id="start">ابدأ اللعب</button>
+    <p class="sub" style="margin-top:14px;font-size:14px">🔫 متجر الأسلحة (الدائرة البرتقالية) · 🎨 ورشة الطلاء تُسقط النجوم (الدائرة الخضراء) · 🟡 مهمات</p>
+  </div>
+</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
