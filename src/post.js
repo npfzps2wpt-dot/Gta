@@ -53,13 +53,13 @@ export function createPost(renderer, scene, camera, overlay) {
   const size = new THREE.Vector2();
   renderer.getSize(size);
   const pr = renderer.getPixelRatio();
-  const rt = new THREE.WebGLRenderTarget(size.x * pr, size.y * pr, { type: THREE.HalfFloatType, samples: 4 });
+  const rt = new THREE.WebGLRenderTarget(size.x * pr, size.y * pr, { type: THREE.HalfFloatType, samples: 0 });
   const composer = new EffectComposer(renderer, rt);
   composer.setPixelRatio(pr);
   const renderPass = new RenderPass(scene, camera);
   const gtao = new GTAOPass(scene, camera, size.x, size.y);
   gtao.output = GTAOPass.OUTPUT.Default;
-  gtao.updateGtaoMaterial({ radius: 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.1, samples: 12, distanceFallOff: 1.0, screenSpaceRadius: false });
+  gtao.updateGtaoMaterial({ radius: 1.6, distanceExponent: 1.2, thickness: 1.2, scale: 1.1, samples: 8, distanceFallOff: 1.0, screenSpaceRadius: false });
   gtao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, radiusExponent: 1, rings: 2, samples: 12 });
   // إخفاء الطبقات الشفافة/السماء أثناء حساب AO
   const origGtaoRender = gtao.render.bind(gtao);
@@ -83,6 +83,10 @@ export function createPost(renderer, scene, camera, overlay) {
     gtao.enabled = lv >= 3;
     bloom.enabled = lv >= 1;
     bloom.strength = lv >= 2 ? 0.32 : 0.25;
+    const smp = lv >= 3 ? 4 : lv >= 2 ? 2 : 0;
+    for (const t of [composer.renderTarget1, composer.renderTarget2]) {
+      if (t.samples !== smp) { t.samples = smp; t.dispose(); }
+    }
   };
   P.resize = (w, h) => {
     const p = renderer.getPixelRatio();

@@ -18,7 +18,8 @@ const sound = new Sound();
 // =====================================================================
 const canvas = $('view');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+renderer.setPixelRatio(1);
+renderer.shadowMap.autoUpdate = false;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -38,17 +39,27 @@ const post = createPost(renderer, scene, camera, overlay);
 
 // جودة الرسوميات: 0 منخفضة .. 3 خارقة
 const QNAMES = ['منخفضة', 'متوسطة', 'عالية', 'خارقة (AO + انعكاسات)'];
-let quality = 3;
-try { const q = localStorage.getItem('neon_q'); if (q !== null) quality = clamp(+q, 0, 3); } catch (e) { /* */ }
+let quality = 1;
+let qualityLocked = false;
+try { const q = localStorage.getItem('neon_q'); if (q !== null) { quality = clamp(+q, 0, 3); qualityLocked = true; } } catch (e) { /* */ }
+const POP = () => ({ traffic: [10, 16, 22, 28][quality], crowd: [14, 24, 34, 44][quality] });
+let shadowEvery = 3;
 function applyQuality() {
   post.setLevel(quality);
-  world.reflector.visible = quality >= 2;
-  const sz = quality >= 3 ? 4096 : quality >= 2 ? 2048 : 1024;
-  if (skyC.sun.shadow.mapSize.x !== sz) {
-    skyC.sun.shadow.mapSize.set(sz, sz);
-    if (skyC.sun.shadow.map) { skyC.sun.shadow.map.dispose(); skyC.sun.shadow.map = null; }
+  const pr = [0.75, 1, 1, Math.min(window.devicePixelRatio || 1, 1.25)][quality];
+  renderer.setPixelRatio(pr);
+  resize();
+  world.reflector.visible = quality >= 3;
+  skyC.flareOn = quality >= 2;
+  const sun = skyC.sun;
+  sun.castShadow = quality >= 1;
+  const sz = [1024, 1024, 2048, 2048][quality];
+  if (sun.shadow.mapSize.x !== sz) {
+    sun.shadow.mapSize.set(sz, sz);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
   }
-  try { localStorage.setItem('neon_q', String(quality)); } catch (e) { /* */ }
+  shadowEvery = [4, 3, 2, 2][quality];
+  if (qualityLocked) { try { localStorage.setItem('neon_q', String(quality)); } catch (e) { /* */ } }
 }
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -57,7 +68,7 @@ function resize() {
   camera.updateProjectionMatrix();
   post.resize(w, h);
 }
-window.addEventListener('resize', () => { resize(); applyQuality(); });
+window.addEventListener('resize', () => { resize(); });
 resize();
 
 let nightF = 0;
@@ -678,6 +689,7 @@ function pedStep(p, dt) {
   const gy = groundY(p.pos.x, p.pos.z);
   p.pos.y = lerp(p.pos.y, gy, 1 - Math.exp(-20 * dt));
   p.phase += spd * dt * 1.7;
+  p.mesh.visible = p.pos.distanceToSquared(camera.position) < 16900;
   p.mesh.position.copy(p.pos);
   p.mesh.rotation.set(0, p.heading, 0);
   animHuman(p.h, p.phase, spd, p.type !== 'civ' && spd < 0.5 ? 1 : 0);
@@ -812,7 +824,7 @@ function updatePlayer(dt) {
   const kbd = (c) => keys.has(c);
   if (pressed.has('KeyF')) tryEnterExit();
   for (let i = 0; i < 4; i++) if (pressed.has('Digit' + (i + 1)) && player.has[i]) { player.weapon = i; say(WEAPONS[i].name, 1); }
-  if (pressed.has('KeyG')) { quality = (quality + 1) % 4; applyQuality(); say('الرسوميات: ' + QNAMES[quality], 2); }
+  if (pressed.has('KeyG')) { quality = (quality + 1) % 4; qualityLocked = true; applyQuality(); say('الرسوميات: ' + QNAMES[quality], 2); }
   if (pressed.has('KeyR')) { rainTarget = rainTarget > 0.5 ? 0 : 1; say(rainTarget ? 'بدأ المطر' : 'توقف المطر', 2); }
   if (pressed.has('KeyM')) { sound.setMusic(!sound.musicOn); say(sound.musicOn ? 'الراديو: تشغيل' : 'الراديو: إيقاف', 1.2); }
 
@@ -1291,10 +1303,11 @@ function managePopulation(dt) {
     if (Math.hypot(p.pos.x - pp.x, p.pos.z - pp.z) > 230) removePed(p);
   }
   const civ = peds.filter((p) => p.type === 'civ' && !p.dead).length;
-  if (civ < 60) spawnCrowd();
-  if (civ < 40) spawnCrowd();
+  const pop = POP();
+  if (civ < pop.crowd) spawnCrowd();
+  if (civ < pop.crowd * 0.7) spawnCrowd();
   const traffic = cars.filter((c) => c.driver && c.driver !== 'player' && c.type !== 'police' && !c.exploded).length;
-  if (traffic < 34) spawnTraffic(false);
+  if (traffic < pop.traffic) spawnTraffic(false);
   const cops = cars.filter((c) => c.type === 'police' && c.driver && !c.exploded).length;
   const wantCops = G.stars > 0 ? Math.min(9, 2 + G.stars * 1.4) : 2;
   if (cops < wantCops) spawnTraffic(true);
@@ -1572,7 +1585,7 @@ function updateHeadSpots() {
   const c = player.inCar;
   for (let i = 0; i < 2; i++) {
     const sp = headSpots[i];
-    if (!c || nightF < 0.2) { sp.intensity = 0; continue; }
+    if (!c || nightF < 0.2 || quality < 2) { sp.intensity = 0; continue; }
     const fx = Math.sin(c.heading), fz = Math.cos(c.heading), rx = -fz, rz = fx;
     const s = i ? 1 : -1;
     sp.position.set(c.pos.x + fx * 2 + rx * 0.6 * s, c.pos.y + 0.8, c.pos.z + fz * 2 + rz * 0.6 * s);
@@ -1665,6 +1678,7 @@ function update(dt) {
       }
       if (c.hp <= 0) blowCar(c);
     }
+    c.mesh.visible = c.pos.distanceToSquared(camera.position) < 62500;
     c.mesh.position.copy(c.pos);
     c.mesh.rotation.y = c.heading;
     // ميلان خفيف
@@ -1690,14 +1704,17 @@ function update(dt) {
 }
 
 let last = performance.now();
+let frameNo = 0;
 function frame(now) {
   requestAnimationFrame(frame);
+  frameNo++;
+  if (frameNo % shadowEvery === 0) renderer.shadowMap.needsUpdate = true;
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   if (G.started && G.running) {
     update(dt);
     updateHud(dt);
-    drawMinimap();
+    if ((frameNo & 1) === 0) drawMinimap();
   } else if (!G.started) {
     // مشهد القائمة: كاميرا تدور
     G.time += dt;
@@ -1711,22 +1728,31 @@ function frame(now) {
   if (quality >= 1) post.composer.render(dt); else renderer.render(scene, camera);
 }
 
-// حاكم الأداء: يخفّض الجودة تلقائياً إذا كان الأداء ضعيفاً
-let gvT = 0, gvN = 0, gvWarm = 4;
+// حاكم الأداء: يخفّض الجودة إذا كان الأداء ضعيفاً، ويرفعها إذا كان الجهاز قوياً
+let gvT = 0, gvN = 0, gvWarm = 5, gvGood = 0;
 function govern(dt) {
   if (!G.started || !G.running || window.__noGovern) return;
   gvWarm -= dt;
   if (gvWarm > 0) return;
   gvT += dt; gvN++;
-  if (gvT > 3) {
+  if (gvT > 2.5) {
     const fps = gvN / gvT;
     gvT = 0; gvN = 0;
-    if (fps < 26 && quality > 0) {
+    if (fps < 38 && quality > 0) {
       quality--;
+      qualityLocked = true;
       applyQuality();
-      say('تم خفض الرسوميات تلقائياً: ' + QNAMES[quality], 3);
-      gvWarm = 3;
-    }
+      say('تم خفض الرسوميات تلقائياً: ' + QNAMES[quality] + ' (اضغط G للتغيير)', 3);
+      gvWarm = 3; gvGood = 0; qualityLocked = true;
+    } else if (fps > 57 && quality < 3 && !qualityLocked) {
+      gvGood++;
+      if (gvGood >= 2) {
+        quality++;
+        applyQuality();
+        say('جهازك قوي — رُفعت الرسوميات: ' + QNAMES[quality], 3);
+        gvGood = 0; gvWarm = 3;
+      }
+    } else gvGood = 0;
   }
 }
 
@@ -1739,8 +1765,8 @@ function initWorld() {
   // سيارة للاعب بالقرب
   const c = spawnCar('sports', sp.x + 6, sp.z + 4, Math.PI / 2, null, 0xff3ca8);
   c.age = -999;
-  for (let i = 0; i < 30; i++) { spawnCrowd(); }
-  for (let i = 0; i < 26; i++) spawnTraffic(false);
+  for (let i = 0; i < POP().crowd * 0.6; i++) { spawnCrowd(); }
+  for (let i = 0; i < POP().traffic * 0.8; i++) spawnTraffic(false);
   for (let i = 0; i < 2; i++) spawnTraffic(true);
   applyTime(G.hour, player.pos, 0.1);
   skyC.updateEnv();
@@ -1750,4 +1776,4 @@ initWorld();
 requestAnimationFrame(frame);
 
 // واجهة للاختبار والتصحيح
-window.__game = { cam, setRain: (v) => { rainTarget = v; }, G, player, cars, peds, scene, camera, mouse, keys, startMission, spots, addHeat, get mission() { return mission; } };
+window.__game = { renderer, cam, setRain: (v) => { rainTarget = v; }, G, player, cars, peds, scene, camera, mouse, keys, startMission, spots, addHeat, get mission() { return mission; } };

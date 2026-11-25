@@ -1,5 +1,6 @@
 import * as THREE from '../lib/three.module.js';
 import { glowTex } from './textures.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 // المواصفات الفيزيائية + الشكل
 export const CAR_TYPES = {
@@ -92,71 +93,99 @@ const M = {
 };
 export const CAR_MATS = M;
 
-export function makeCarMesh(type, color) {
+const templates = new Map();
+let wheelGeos = null;
+function wheelTemplate() {
+  if (wheelGeos) return wheelGeos;
+  const parts = [G.rim, G.hub];
+  const list = parts.map((g) => g.clone().toNonIndexed());
+  for (let k = 0; k < 3; k++) {
+    const sp = G.spoke.clone().rotateX((k * Math.PI) / 3).toNonIndexed();
+    list.push(sp);
+  }
+  wheelGeos = mergeGeometries(list, false);
+  return wheelGeos;
+}
+
+function template(type) {
+  if (templates.has(type)) return templates.get(type);
   const t = CAR_TYPES[type];
   const { body, cab, roof } = bodyGeo(type);
+  const { L, W, belt } = t;
+  const parts = []; // [matKey, geometry]
+  const P = (key, geo, x = 0, y = 0, z = 0) => {
+    const g = geo.index ? geo.toNonIndexed() : geo.clone();
+    g.translate(x, y, z);
+    parts.push([key, g]);
+  };
+  P('paint', body);
+  P('glass', cab);
+  P(type === 'taxi' || type === 'police' ? 'white' : 'paint', roof);
+  P('trim', G.under, 0, 0.42, 0);
+  P('trim', G.strip, 0, 0.58, L / 2 - 0.02);
+  P('trim', new THREE.BoxGeometry(W * 0.62, 0.17, 0.04), 0, belt - 0.32, L / 2 + 0.01);
+  P('trim', G.strip, 0, 0.6, -L / 2 + 0.02);
+  const hx = W / 2 - 0.34;
+  for (const s of [-1, 1]) P('head', G.light, s * hx, belt - 0.27, L / 2 - 0.01);
+  P('plate', G.plate, 0, 0.7, -L / 2);
+  P('plate', G.plate, 0, 0.62, L / 2);
+  for (const s of [-1, 1]) P('paint', G.mirror, s * (W / 2 + 0.02), belt + 0.12, t.cabZ + t.cabLen / 2 - 0.45);
+  if (t.spoiler) {
+    P('trim', new THREE.BoxGeometry(W * 0.9, 0.05, 0.38), 0, belt + 0.2, -L / 2 + 0.2);
+    for (const s of [-1, 1]) P('trim', new THREE.BoxGeometry(0.05, 0.2, 0.3), s * W * 0.38, belt + 0.1, -L / 2 + 0.2);
+  }
+  if (type === 'taxi') P('taxiSign', new THREE.BoxGeometry(0.75, 0.2, 0.32), 0, belt + t.cabH + 0.17, t.cabZ);
+  if (type === 'police') P('white', new THREE.BoxGeometry(W + 0.02, 0.3, 1.9), 0, belt - 0.42, -0.15);
+  if (type === 'van') P('white', new THREE.BoxGeometry(W - 0.06, 0.02, 1.2), 0, belt + 0.5, -0.5);
+  const byKey = {};
+  for (const [k, g] of parts) (byKey[k] = byKey[k] || []).push(g);
+  const merged = {};
+  for (const k of Object.keys(byKey)) merged[k] = mergeGeometries(byKey[k], false);
+  templates.set(type, merged);
+  return merged;
+}
+
+export function makeCarMesh(type, color) {
+  const t = CAR_TYPES[type];
+  const tpl = template(type);
   const g = new THREE.Group();
   const paint = new THREE.MeshPhysicalMaterial({
     color, roughness: 0.32, metalness: 0.65, clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.25,
   });
-  const add = (geo, mat, x = 0, y = 0, z = 0, cast = true) => {
-    const o = new THREE.Mesh(geo, mat);
-    o.position.set(x, y, z);
-    o.castShadow = cast;
+  const matFor = { paint, glass: M.glass, trim: M.trim, plate: M.plate, head: M.head, white: M.white, taxiSign: M.taxiSign };
+  for (const k of Object.keys(tpl)) {
+    const o = new THREE.Mesh(tpl[k], matFor[k]);
+    o.castShadow = k === 'paint';
     g.add(o);
-    return o;
-  };
-  add(body, paint);
-  add(cab, M.glass);
-  add(roof, type === 'taxi' || type === 'police' ? M.white : paint);
-  add(G.under, M.trim, 0, 0.42, 0, false);
+  }
   const { L, W, belt } = t;
-  // الشبك الأمامي ومصدات
-  add(G.strip, M.trim, 0, 0.58, L / 2 - 0.02);
-  add(new THREE.BoxGeometry(W * 0.62, 0.17, 0.04), M.trim, 0, belt - 0.32, L / 2 + 0.01);
-  add(G.strip, M.trim, 0, 0.6, -L / 2 + 0.02);
-  // أضواء أمامية
   const hx = W / 2 - 0.34;
-  for (const s of [-1, 1]) add(G.light, M.head, s * hx, belt - 0.27, L / 2 - 0.01, false);
-  // أضواء خلفية (تتغير عند الفرملة)
   const tails = [];
-  for (const s of [-1, 1]) tails.push(add(G.light, M.tail, s * hx, belt - 0.2, -L / 2 + 0.01, false));
-  tails.push(add(G.bar, M.tail, 0, belt - 0.2, -L / 2 + 0.012, false));
-  // لوحة
-  add(G.plate, M.plate, 0, 0.7, -L / 2 - 0.0, false);
-  add(G.plate, M.plate, 0, 0.62, L / 2 + 0.0, false);
-  // مرايا
-  for (const s of [-1, 1]) add(G.mirror, paint, s * (W / 2 + 0.02), belt + 0.12, t.cabZ + t.cabLen / 2 - 0.45, false);
-  // العجلات
+  for (const s of [-1, 1]) {
+    const o = new THREE.Mesh(G.light, M.tail);
+    o.position.set(s * hx, belt - 0.2, -L / 2 + 0.01);
+    g.add(o); tails.push(o);
+  }
+  const bar = new THREE.Mesh(G.bar, M.tail);
+  bar.position.set(0, belt - 0.2, -L / 2 + 0.012);
+  g.add(bar); tails.push(bar);
   const wheels = [];
+  const rimG = wheelTemplate();
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const steer = new THREE.Group();
     steer.position.set(sx * (W / 2 - 0.12), 0.37, sz * L * 0.31);
     const spin = new THREE.Group();
-    const tire = new THREE.Mesh(G.tire, M.tire); tire.castShadow = true;
-    const rim = new THREE.Mesh(G.rim, M.rim);
-    rim.scale.set(1, 1, 1);
-    spin.add(tire, rim, new THREE.Mesh(G.hub, M.rimDark));
-    for (let k = 0; k < 3; k++) { const sp = new THREE.Mesh(G.spoke, M.rimDark); sp.rotation.x = (k * Math.PI) / 3; spin.add(sp); }
+    spin.add(new THREE.Mesh(G.tire, M.tire), new THREE.Mesh(rimG, M.rim));
     steer.add(spin);
-    // الإطار يميل للخارج (يبدو أعرض)
     g.add(steer);
     wheels.push({ steer, spin, front: sz > 0 });
   }
-  const out = { group: g, paint, wheels, tails, taillightsOn: false };
-  if (t.spoiler) {
-    add(new THREE.BoxGeometry(W * 0.9, 0.05, 0.38), M.trim, 0, belt + 0.2, -L / 2 + 0.2);
-    for (const s of [-1, 1]) add(new THREE.BoxGeometry(0.05, 0.2, 0.3), M.trim, s * W * 0.38, belt + 0.1, -L / 2 + 0.2, false);
-  }
-  if (type === 'taxi') add(new THREE.BoxGeometry(0.75, 0.2, 0.32), M.taxiSign, 0, belt + t.cabH + 0.17, t.cabZ);
+  const out = { group: g, paint, wheels, tails };
   if (type === 'police') {
-    out.lightR = add(new THREE.BoxGeometry(0.6, 0.16, 0.3), M.sirenR, -0.36, belt + t.cabH + 0.14, t.cabZ, false);
-    out.lightB = add(new THREE.BoxGeometry(0.6, 0.16, 0.3), M.sirenB, 0.36, belt + t.cabH + 0.14, t.cabZ, false);
-    // طلاء أبيض على الأبواب
-    add(new THREE.BoxGeometry(W + 0.02, 0.3, 1.9), M.white, 0, belt - 0.42, -0.15);
+    const mk = (mat, x) => { const o = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.16, 0.3), mat); o.position.set(x, belt + t.cabH + 0.14, t.cabZ); g.add(o); return o; };
+    out.lightR = mk(M.sirenR, -0.36);
+    out.lightB = mk(M.sirenB, 0.36);
   }
-  if (type === 'van') add(new THREE.BoxGeometry(W - 0.06, 0.02, 1.2), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 }), 0, belt + 0.5, -0.5, false);
-  // بقعة ضوء المصابيح على الأرض (ليلاً)
   const beam = new THREE.Mesh(beamGeo, beamMat);
   beam.position.y = 0.05;
   beam.visible = false;

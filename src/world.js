@@ -145,6 +145,7 @@ export function lineClear(x0, z0, x1, z1, h = 1.5) {
 }
 
 // ---------- بناء العالم ----------
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { Reflector } from '../lib/jsm/objects/Reflector.js';
 import { asphaltTex, concreteTex, grassTex, barkTex, frondTex, facadeSet, storefrontTex, billboardTex, glowTex, waterNormalTex } from './textures.js';
 
@@ -254,16 +255,15 @@ export function buildWorld(scene, overlay) {
   const bills = [];
   const shops = []; // واجهات المحلات
 
-  function addBox(cx, cz, w, d, h, y0, mat, towerLike) {
+  const buckets = new Map();
+  const pushGeo = (mat, geo) => { if (!buckets.has(mat)) buckets.set(mat, []); buckets.get(mat).push(geo); };
+  function addBox(cx, cz, w, d, h, y0, mat) {
     const geo = new THREE.BoxGeometry(w, h, d);
     scaleUV(geo, w, h, d);
-    // الـ AO uv2 غير مطلوب في r160 (يستخدم uv)
-    const mesh = new THREE.Mesh(geo, [mat, mat, roofMat, roofMat, mat, mat]);
-    mesh.position.set(cx, y0 + h / 2, cz);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    return mesh;
+    const uv = geo.attributes.uv;
+    for (let i = 8; i < 16; i++) uv.setXY(i, 0.012, 0.012); // السقف: لون الجدار الصافي
+    geo.translate(cx, y0 + h / 2, cz);
+    pushGeo(mat, geo);
   }
 
   function addBuilding(cx, cz, w, d, h, tall) {
@@ -278,9 +278,9 @@ export function buildWorld(scene, overlay) {
       topY += th; remaining -= th;
       if (t < tiers - 1) {
         // سطح الطابق مع إفريز
-        const lip = new THREE.Mesh(new THREE.BoxGeometry(curW + 0.5, 0.5, curD + 0.5), roofMat);
-        lip.position.set(curX, topY + 0.1, curZ); lip.castShadow = true;
-        scene.add(lip);
+        const lip = new THREE.BoxGeometry(curW + 0.5, 0.5, curD + 0.5);
+        lip.translate(curX, topY + 0.1, curZ);
+        pushGeo(roofMat, lip);
         curW *= 0.78; curD *= 0.78;
         curX += rnd(-1.2, 1.2); curZ += rnd(-1.2, 1.2);
       }
@@ -535,6 +535,13 @@ export function buildWorld(scene, overlay) {
   });
   scene.add(poles, heads, pools);
 
+  for (const [mat, list] of buckets) {
+    const merged = mergeGeometries(list, false);
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    scene.add(mesh);
+    list.forEach((g) => g.dispose());
+  }
   world.minimapCanvas = buildMinimap(world);
   return world;
 }

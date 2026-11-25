@@ -66,7 +66,7 @@ export function createSky({ scene, renderer, camera, overlay }) {
       float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
       float n(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
         return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y); }
-      float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<5;i++){ s+=a*n(p); p=p*2.03+vec2(7.1,3.3); a*=0.5; } return s; }
+      float fbm(vec2 p){ float s=0.0,a=0.5; for(int i=0;i<4;i++){ s+=a*n(p); p=p*2.03+vec2(7.1,3.3); a*=0.5; } return s; }
       void main(){
         vec3 d=normalize(vD);
         if(d.y<0.02) discard;
@@ -188,10 +188,10 @@ export function createSky({ scene, renderer, camera, overlay }) {
 
     // وهج الشمس
     flare.position.copy(camera.position).addScaledVector(sd, 1400);
-    flare.visible = dayLit && sd.y > 0.0 && rain < 0.5;
+    flare.visible = S.flareOn !== false && dayLit && sd.y > 0.0 && rain < 0.5;
 
     envClock += dt;
-    if (envClock > 4) { envClock = 0; S.updateEnv(); }
+    if (envClock > 25) { envClock = 0; S.updateEnv(); }
   };
   S.sunDir = (out, hour) => out;
   return S;
