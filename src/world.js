@@ -144,50 +144,9 @@ export function lineClear(x0, z0, x1, z1, h = 1.5) {
   return rayWorld(x0, h, z0, dx / len, 0, dz / len, len) === Infinity;
 }
 
-// ---------- النسيج ----------
-const WALLS = ['#f2d6c9', '#e8b4c8', '#bfe3e8', '#d9d2c0', '#9db7c9', '#c8b6e2', '#f0e0a8', '#8e9aaf', '#ffd2b0', '#a9d8c4'];
-function windowTextures(wall) {
-  const S = 256;
-  const a = document.createElement('canvas');
-  a.width = a.height = S;
-  const e = document.createElement('canvas');
-  e.width = e.height = S;
-  const g = a.getContext('2d');
-  const h = e.getContext('2d');
-  g.fillStyle = wall;
-  g.fillRect(0, 0, S, S);
-  for (let i = 0; i < 400; i++) {
-    g.fillStyle = `rgba(0,0,0,${Math.random() * 0.04})`;
-    g.fillRect(Math.random() * S, Math.random() * S, 3, 3);
-  }
-  h.fillStyle = '#000';
-  h.fillRect(0, 0, S, S);
-  const c = S / 4;
-  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
-    const x = i * c + 12, y = j * c + 14, w = c - 24, hh = c - 30;
-    const gr = g.createLinearGradient(x, y, x + w, y + hh);
-    gr.addColorStop(0, '#2a4a6a');
-    gr.addColorStop(1, '#0e1c33');
-    g.fillStyle = gr;
-    g.fillRect(x, y, w, hh);
-    g.fillStyle = 'rgba(255,255,255,.18)';
-    g.fillRect(x, y, w, 5);
-    g.fillStyle = 'rgba(0,0,0,.25)';
-    g.fillRect(x - 3, y + hh, w + 6, 5);
-    if (Math.random() < 0.5) {
-      h.fillStyle = pick(['#ffd27a', '#ffe9b0', '#ffc15a', '#bfe6ff']);
-      h.fillRect(x, y, w, hh);
-    }
-  }
-  const mk = (cv) => {
-    const t = new THREE.CanvasTexture(cv);
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.anisotropy = 4;
-    return t;
-  };
-  return { map: mk(a), emissiveMap: mk(e) };
-}
+// ---------- بناء العالم ----------
+import { Reflector } from '../lib/jsm/objects/Reflector.js';
+import { asphaltTex, concreteTex, grassTex, barkTex, frondTex, facadeSet, storefrontTex, billboardTex, glowTex, waterNormalTex } from './textures.js';
 
 function scaleUV(geo, w, h, d) {
   const uv = geo.attributes.uv;
@@ -202,247 +161,379 @@ function scaleUV(geo, w, h, d) {
   }
 }
 
-// ---------- بناء العالم ----------
-export function buildWorld(scene) {
-  const world = { bldgMats: [], blocks: [], parkBlocks: [], lampMat: null };
+const WALLS = ['#e9d3c4', '#e0aac0', '#b5dbe2', '#d9d2c0', '#98b0c4', '#c3b0de', '#efdca0', '#8d98ad', '#ffcfa8', '#a4d4be', '#c9c2b8', '#d8836f'];
 
-  // أرضية
-  const sand = new THREE.Mesh(
-    new THREE.PlaneGeometry(ISLAND * 2, ISLAND * 2),
-    new THREE.MeshStandardMaterial({ color: 0xe9d9a6, roughness: 1 })
-  );
-  sand.rotation.x = -Math.PI / 2;
-  sand.position.y = -0.02;
-  sand.receiveShadow = true;
-  scene.add(sand);
-  const wet = new THREE.Mesh(
-    new THREE.PlaneGeometry(ISLAND * 2 + 60, ISLAND * 2 + 60),
-    new THREE.MeshStandardMaterial({ color: 0xb9a87a, roughness: 1 })
-  );
-  wet.rotation.x = -Math.PI / 2;
-  wet.position.y = -0.2;
-  scene.add(wet);
-  const water = new THREE.Mesh(
-    new THREE.PlaneGeometry(6000, 6000),
-    new THREE.MeshStandardMaterial({ color: 0x1a78b8, roughness: 0.25, metalness: 0.2 })
-  );
-  water.rotation.x = -Math.PI / 2;
-  water.position.y = -0.7;
-  scene.add(water);
-  world.water = water;
-
-  const asphalt = new THREE.Mesh(
-    new THREE.PlaneGeometry(HALF * 2 + ROAD, HALF * 2 + ROAD),
-    new THREE.MeshStandardMaterial({ color: 0x2c2e38, roughness: 0.95 })
-  );
-  asphalt.rotation.x = -Math.PI / 2;
-  asphalt.receiveShadow = true;
-  scene.add(asphalt);
-
-  // خطوط الطريق
-  const dashGeo = new THREE.BoxGeometry(0.35, 0.03, 3.6);
-  const dashMat = new THREE.MeshBasicMaterial({ color: 0xf2e6a0 });
-  const dashes = [];
-  for (let k = 0; k <= N; k++) {
-    const c = (k - N / 2) * P;
-    for (let t = -HALF + 4; t < HALF; t += 8) {
-      const d = (((t + HALF) % P) + P) % P;
-      if (Math.min(d, P - d) < 11) continue;
-      dashes.push([t, c, false]); // على طول x عند z=c
-      dashes.push([c, t, true]);
-    }
-  }
-  const dm = new THREE.InstancedMesh(dashGeo, dashMat, dashes.length);
+export function buildWorld(scene, overlay) {
+  const world = { bldgMats: [], blocks: [], parkBlocks: [], lampMat: null, emissiveMats: [], nightMats: [] };
   const dummy = new THREE.Object3D();
-  dashes.forEach(([x, z, alongZ], i) => {
-    dummy.position.set(x, 0.03, z);
-    dummy.rotation.set(0, alongZ ? 0 : Math.PI / 2, 0);
-    dummy.updateMatrix();
-    dm.setMatrixAt(i, dummy.matrix);
-  });
-  scene.add(dm);
 
-  // ممرات المشاة
-  const zebra = [];
-  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
-    const p = nodePos(i, j);
-    for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      if ((i === 0 && ax < 0) || (i === N && ax > 0) || (j === 0 && az < 0) || (j === N && az > 0)) continue;
-      for (let s = -6; s <= 6; s += 1.8) {
-        zebra.push([p.x + ax * 11.5 + (az !== 0 ? s : 0), p.z + az * 11.5 + (ax !== 0 ? s : 0), ax !== 0]);
-      }
-    }
+  // ----- مواد الأرض -----
+  const asphalt = asphaltTex();
+  asphalt.repeat.set((HALF * 2 + ROAD) / 7, (HALF * 2 + ROAD) / 7);
+  const roadMat = new THREE.MeshStandardMaterial({ map: asphalt, bumpMap: asphalt, bumpScale: 1.2, color: 0xb0b0b8, roughness: 0.55, metalness: 0.05 });
+  world.roadMat = roadMat;
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(HALF * 2 + ROAD, HALF * 2 + ROAD), roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.receiveShadow = true;
+  scene.add(road);
+
+  // انعكاس الشوارع المبللة (يُضاف فوق الإسفلت)
+  const reflShader = {
+    name: 'WetRoad',
+    uniforms: { color: { value: null }, tDiffuse: { value: null }, textureMatrix: { value: null }, uWet: { value: 0.5 }, uTime: { value: 0 }, uIntensity: { value: 1 } },
+    vertexShader: `uniform mat4 textureMatrix; varying vec4 vUv; varying vec3 vW;
+      void main(){ vUv=textureMatrix*vec4(position,1.0); vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz; gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fragmentShader: `uniform sampler2D tDiffuse; uniform float uWet; uniform float uTime; uniform float uIntensity; varying vec4 vUv; varying vec3 vW;
+      float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+      float n(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x),f.y); }
+      void main(){
+        vec2 p=vW.xz;
+        float puddle=smoothstep(0.28,0.7,n(p*0.045)*0.6+n(p*0.13)*0.4);
+        float wet=clamp(uWet*(0.35+0.9*puddle),0.0,1.0);
+        vec2 dist=(vec2(n(p*2.2+uTime*0.05),n(p*2.2+19.0))-0.5)*0.05*(1.2-puddle*0.8);
+        vec4 uv=vUv; uv.xy+=dist*uv.w;
+        vec3 refl=texture2DProj(tDiffuse,uv).rgb;
+        vec3 V=normalize(cameraPosition-vW);
+        float fres=pow(1.0-clamp(V.y,0.0,1.0),3.0);
+        float k=(0.08+0.92*fres)*wet*uIntensity;
+        gl_FragColor=vec4(refl*k,1.0);
+      }`,
+  };
+  const refl = new Reflector(new THREE.PlaneGeometry(HALF * 2 + ROAD, HALF * 2 + ROAD), {
+    textureWidth: Math.floor(window.innerWidth * 0.55), textureHeight: Math.floor(window.innerHeight * 0.55), clipBias: 0.003, shader: reflShader, multisample: 0,
+  });
+  refl.rotation.x = -Math.PI / 2;
+  refl.position.y = 0.025;
+  refl.material.transparent = true;
+  refl.material.blending = THREE.AdditiveBlending;
+  refl.material.depthWrite = false;
+  refl.renderOrder = 2;
+  overlay.add(refl);
+  world.reflector = refl;
+
+  // رمل + شاطئ + ماء
+  const sand = new THREE.Mesh(new THREE.PlaneGeometry(ISLAND * 2, ISLAND * 2), new THREE.MeshStandardMaterial({ color: 0xe6d3a0, roughness: 1 }));
+  sand.rotation.x = -Math.PI / 2; sand.position.y = -0.02; sand.receiveShadow = true;
+  scene.add(sand);
+  const wet = new THREE.Mesh(new THREE.PlaneGeometry(ISLAND * 2 + 80, ISLAND * 2 + 80), new THREE.MeshStandardMaterial({ color: 0xa89868, roughness: 0.9 }));
+  wet.rotation.x = -Math.PI / 2; wet.position.y = -0.22;
+  scene.add(wet);
+  const wn = waterNormalTex();
+  wn.repeat.set(220, 220);
+  const wn2 = wn.clone(); wn2.needsUpdate = true; wn2.repeat.set(97, 97);
+  const waterMat = new THREE.MeshPhysicalMaterial({ color: 0x0a5f86, roughness: 0.06, metalness: 0.1, normalMap: wn, normalScale: new THREE.Vector2(0.55, 0.55), envMapIntensity: 1.6, clearcoat: 0.6, clearcoatRoughness: 0.05 });
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000), waterMat);
+  water.rotation.x = -Math.PI / 2; water.position.y = -0.8;
+  overlay.add(water);
+  world.water = water;
+  world.waterNormal = wn;
+
+  // ----- مواد المباني -----
+  const styles = [];
+  for (let k = 0; k < 8; k++) {
+    const st = facadeSet(k < 5 ? 'concrete' : 'brick', WALLS[k % WALLS.length]);
+    styles.push(st);
   }
-  const zm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 0.03, 3.4), new THREE.MeshBasicMaterial({ color: 0xdddddd }), zebra.length);
-  zebra.forEach(([x, z, alongX], i) => {
-    dummy.position.set(x, 0.035, z);
-    dummy.rotation.set(0, alongX ? 0 : Math.PI / 2, 0);
-    dummy.updateMatrix();
-    zm.setMatrixAt(i, dummy.matrix);
-  });
-  scene.add(zm);
-
-  // مواد المباني
-  const mats = WALLS.map((w) => {
-    const t = windowTextures(w);
+  for (let k = 0; k < 4; k++) styles.push(facadeSet('glass'));
+  const mkFacade = (st, glass) => {
     const m = new THREE.MeshStandardMaterial({
-      map: t.map, emissiveMap: t.emissiveMap, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.75,
+      map: st.map, aoMap: st.orm, roughnessMap: st.orm, metalnessMap: st.orm, roughness: 1, metalness: 1,
+      bumpMap: st.bump, bumpScale: 1.5, emissiveMap: st.emissive, emissive: 0xffffff, emissiveIntensity: 0,
+      envMapIntensity: glass ? 1.6 : 1.0,
     });
     world.bldgMats.push(m);
     return m;
-  });
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x777b85, roughness: 1 });
-  const neonCols = [0xff3ca8, 0x2ef3ff, 0xffb02e, 0xa56bff, 0x4dff9a];
-  const neonMats = neonCols.map((c) => new THREE.MeshBasicMaterial({ color: c }));
+  };
+  const concreteMats = styles.slice(0, 8).map((s) => mkFacade(s, false));
+  const glassMats = styles.slice(8).map((s) => mkFacade(s, true));
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x6e717a, roughness: 0.95 });
 
-  function addBuilding(cx, cz, w, d, h) {
+  // نماذج اللافتات والأسطح (مجمّعة)
+  const props = []; // أجهزة تكييف على الأسطح
+  const tanks = [];
+  const bills = [];
+  const shops = []; // واجهات المحلات
+
+  function addBox(cx, cz, w, d, h, y0, mat, towerLike) {
     const geo = new THREE.BoxGeometry(w, h, d);
     scaleUV(geo, w, h, d);
-    const m = pick(mats);
-    const mesh = new THREE.Mesh(geo, [m, m, roofMat, roofMat, m, m]);
-    mesh.position.set(cx, 0.3 + h / 2, cz);
+    // الـ AO uv2 غير مطلوب في r160 (يستخدم uv)
+    const mesh = new THREE.Mesh(geo, [mat, mat, roofMat, roofMat, mat, mat]);
+    mesh.position.set(cx, y0 + h / 2, cz);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     scene.add(mesh);
-    addCollider({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2, h: h + 0.3 });
-    // لافتات نيون
-    if (Math.random() < 0.55) {
-      const nm = pick(neonMats);
-      const side = pick([0, 1, 2, 3]);
-      const sy = rnd(4, Math.min(12, h - 2));
-      const strip = new THREE.Mesh(
-        side < 2 ? new THREE.BoxGeometry(w * 0.7, 0.5, 0.35) : new THREE.BoxGeometry(0.35, 0.5, d * 0.7),
-        nm
-      );
-      const off = 0.25;
-      if (side === 0) strip.position.set(cx, 0.3 + sy, cz + d / 2 + off);
-      if (side === 1) strip.position.set(cx, 0.3 + sy, cz - d / 2 - off);
-      if (side === 2) strip.position.set(cx + w / 2 + off, 0.3 + sy, cz);
-      if (side === 3) strip.position.set(cx - w / 2 - off, 0.3 + sy, cz);
-      scene.add(strip);
+    return mesh;
+  }
+
+  function addBuilding(cx, cz, w, d, h, tall) {
+    const glass = tall && Math.random() < 0.4;
+    const mat = glass ? pick(glassMats) : pick(concreteMats);
+    let topY = 0.3, curW = w, curD = d, curX = cx, curZ = cz;
+    const tiers = tall && h > 38 ? (h > 80 ? 3 : 2) : 1;
+    let remaining = h;
+    for (let t = 0; t < tiers; t++) {
+      const th = t === tiers - 1 ? remaining : remaining * (t === 0 ? 0.55 : 0.6);
+      addBox(curX, curZ, curW, curD, th, topY, mat);
+      topY += th; remaining -= th;
+      if (t < tiers - 1) {
+        // سطح الطابق مع إفريز
+        const lip = new THREE.Mesh(new THREE.BoxGeometry(curW + 0.5, 0.5, curD + 0.5), roofMat);
+        lip.position.set(curX, topY + 0.1, curZ); lip.castShadow = true;
+        scene.add(lip);
+        curW *= 0.78; curD *= 0.78;
+        curX += rnd(-1.2, 1.2); curZ += rnd(-1.2, 1.2);
+      }
     }
-    // أبراج: هوائي
-    if (h > 55) {
-      const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 14, 5), new THREE.MeshBasicMaterial({ color: 0xff2244 }));
-      ant.position.set(cx, 0.3 + h + 7, cz);
+    addCollider({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2, h: h + 0.3 });
+    // تفاصيل السطح
+    const roofY = topY;
+    const nProps = rint(2, 5);
+    for (let k = 0; k < nProps; k++) props.push([curX + rnd(-curW * 0.35, curW * 0.35), roofY, curZ + rnd(-curD * 0.35, curD * 0.35), rnd(1.2, 3), rnd(0.8, 1.8), rnd(1.2, 3)]);
+    if (Math.random() < 0.35) tanks.push([curX + rnd(-curW * 0.3, curW * 0.3), roofY, curZ + rnd(-curD * 0.3, curD * 0.3)]);
+    if (tall && h > 60) {
+      const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.22, 20, 6), new THREE.MeshStandardMaterial({ color: 0x888d99, metalness: 0.8, roughness: 0.4 }));
+      ant.position.set(curX, roofY + 10, curZ); ant.castShadow = true;
       scene.add(ant);
+      const bl = new THREE.Mesh(new THREE.SphereGeometry(0.45, 8, 6), new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 0.2, 0.3) }));
+      bl.position.set(curX, roofY + 20.2, curZ);
+      scene.add(bl);
+      world.blink = world.blink || [];
+      world.blink.push(bl);
+    }
+    // لوحة إعلانية على السطح
+    if (h > 22 && Math.random() < 0.22) bills.push([cx + rnd(-w / 4, w / 4), roofY, cz + (Math.random() < 0.5 ? 1 : -1) * (d / 2 - 1.2), Math.random() < 0.5 ? 0 : Math.PI]);
+    // واجهات المحلات على الجانبين المطلين على الشارع
+    const sides = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+    for (const [sx, sz] of sides) {
+      const len = sx === 0 ? w : d;
+      const n = Math.floor(len / 6.2);
+      for (let k = 0; k < n; k++) {
+        if (Math.random() < 0.2) continue;
+        const off = (k - (n - 1) / 2) * (len / n);
+        const px = cx + (sx === 0 ? off : sx * (w / 2 + 0.04));
+        const pz = cz + (sz === 0 ? off : sz * (d / 2 + 0.04));
+        shops.push([px, 0.3, pz, Math.atan2(sx, sz)]);
+      }
     }
   }
 
-  // البلوكات
+  // ----- البلوكات -----
   const slabGeo = new THREE.BoxGeometry(BLOCK, 0.3, BLOCK);
-  const slabs = new THREE.InstancedMesh(slabGeo, new THREE.MeshStandardMaterial({ roughness: 1 }), N * N);
-  slabs.receiveShadow = true;
+  const conc = concreteTex(); conc.repeat.set(8, 8);
+  const grass = grassTex(); grass.repeat.set(6, 6);
+  const slabMat = new THREE.MeshStandardMaterial({ map: conc, bumpMap: conc, bumpScale: 0.6, roughness: 0.85 });
+  const grassMat = new THREE.MeshStandardMaterial({ map: grass, roughness: 1 });
+  const nBlocks = N * N;
+  const slabs = new THREE.InstancedMesh(slabGeo, slabMat, nBlocks);
+  const parkSlabs = new THREE.InstancedMesh(slabGeo, grassMat, nBlocks);
+  slabs.receiveShadow = parkSlabs.receiveShadow = true;
+  let si = 0, pi = 0;
   const palms = [];
-  let idx = 0;
+  const bushes = [];
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
     const c = nodePos(i + 0.5, j + 0.5);
-    const distC = Math.hypot(c.x, c.z) / HALF; // 0 مركز .. 1.4 الأطراف
+    const distC = Math.hypot(c.x, c.z) / HALF;
     let type = 'normal';
     const r = Math.random();
     if (r < 0.14) type = 'park';
-    else if (distC < 0.55 && r < 0.5) type = 'tower';
+    else if (distC < 0.55 && r < 0.52) type = 'tower';
     world.blocks.push({ i, j, x: c.x, z: c.z, type });
     dummy.position.set(c.x, 0.15, c.z);
     dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
-    slabs.setMatrixAt(idx, dummy.matrix);
-    slabs.setColorAt(idx, new THREE.Color(type === 'park' ? 0x4fa65a : 0xc4c0b8));
-    idx++;
+    if (type === 'park') parkSlabs.setMatrixAt(pi++, dummy.matrix); else slabs.setMatrixAt(si++, dummy.matrix);
     if (type === 'park') {
       world.parkBlocks.push({ x: c.x, z: c.z });
-      const n = rint(10, 16);
+      const n = rint(10, 15);
       for (let k = 0; k < n; k++) palms.push([c.x + rnd(-27, 27), c.z + rnd(-27, 27)]);
-      // مقاعد
+      for (let k = 0; k < 22; k++) bushes.push([c.x + rnd(-29, 29), c.z + rnd(-29, 29), rnd(0.6, 1.4)]);
       for (let k = 0; k < 3; k++) {
-        const b = new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 0.6), new THREE.MeshStandardMaterial({ color: 0x8a5a33 }));
-        b.position.set(c.x + rnd(-20, 20), 0.55, c.z + rnd(-20, 20));
-        scene.add(b);
+        const bx = c.x + rnd(-20, 20), bz = c.z + rnd(-20, 20);
+        const bench = new THREE.Mesh(new THREE.BoxGeometry(2, 0.12, 0.6), new THREE.MeshStandardMaterial({ color: 0x8a5a33, roughness: 0.8 }));
+        bench.position.set(bx, 0.7, bz); bench.castShadow = true;
+        const legs = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x333 }));
+        legs.position.set(bx, 0.5, bz);
+        scene.add(bench, legs);
       }
-      // مسبح/نافورة
-      const fo = new THREE.Mesh(new THREE.CylinderGeometry(5, 5, 0.5, 20), new THREE.MeshStandardMaterial({ color: 0x3aa8ff, roughness: 0.2 }));
-      fo.position.set(c.x, 0.5, c.z);
-      scene.add(fo);
-      addCollider({ x0: c.x - 5, x1: c.x + 5, z0: c.z - 5, z1: c.z + 5, h: 1 });
+      const fo = new THREE.Mesh(new THREE.CylinderGeometry(5, 5.4, 0.9, 28), new THREE.MeshStandardMaterial({ color: 0xcfcac0, roughness: 0.7 }));
+      fo.position.set(c.x, 0.75, c.z); fo.castShadow = true; fo.receiveShadow = true;
+      const fw = new THREE.Mesh(new THREE.CircleGeometry(4.6, 28), new THREE.MeshPhysicalMaterial({ color: 0x1b8fd0, roughness: 0.04, metalness: 0.2, clearcoat: 1 }));
+      fw.rotation.x = -Math.PI / 2; fw.position.set(c.x, 1.18, c.z);
+      scene.add(fo, fw);
+      addCollider({ x0: c.x - 5.2, x1: c.x + 5.2, z0: c.z - 5.2, z1: c.z + 5.2, h: 1.2 });
     } else if (type === 'tower') {
       const s = rnd(38, 50);
-      addBuilding(c.x + rnd(-4, 4), c.z + rnd(-4, 4), s, rnd(36, 50), rnd(70, 140) * (1.15 - distC * 0.5));
+      addBuilding(c.x + rnd(-4, 4), c.z + rnd(-4, 4), s, rnd(36, 50), rnd(80, 150) * (1.15 - distC * 0.5), true);
     } else {
       const base = distC < 0.7 ? 1.9 : distC < 1 ? 1.2 : 0.7;
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         if (Math.random() < 0.08) continue;
         const w = rnd(18, 26), d = rnd(18, 26);
         const h = rnd(10, 32) * base * (Math.random() < 0.15 ? 1.8 : 1);
-        addBuilding(c.x + sx * 14.5, c.z + sz * 14.5, w, d, Math.max(8, h));
+        addBuilding(c.x + sx * 14.5, c.z + sz * 14.5, w, d, Math.max(8, h), h > 30);
       }
     }
   }
-  slabs.instanceMatrix.needsUpdate = true;
-  slabs.instanceColor.needsUpdate = true;
-  scene.add(slabs);
+  slabs.count = si; parkSlabs.count = pi;
+  slabs.instanceMatrix.needsUpdate = true; parkSlabs.instanceMatrix.needsUpdate = true;
+  scene.add(slabs, parkSlabs);
 
-  // نخيل على الشاطئ
-  for (let k = 0; k < 140; k++) {
-    const a = rnd(0, Math.PI * 2);
-    const r = rnd(HALF + 30, ISLAND - 10);
+  // ----- أجهزة السطح -----
+  const propMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0x8b9099, roughness: 0.6, metalness: 0.5 }), props.length);
+  props.forEach(([x, y, z, w, h, d], i) => {
+    dummy.position.set(x, y + h / 2, z); dummy.scale.set(w, h, d); dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); propMesh.setMatrixAt(i, dummy.matrix);
+  });
+  propMesh.castShadow = true;
+  scene.add(propMesh);
+  const tankMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1.4, 1.4, 2.6, 12), new THREE.MeshStandardMaterial({ color: 0x7a5a3c, roughness: 0.8 }), tanks.length);
+  tanks.forEach(([x, y, z], i) => { dummy.position.set(x, y + 3.2, z); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); tankMesh.setMatrixAt(i, dummy.matrix); });
+  tankMesh.castShadow = true;
+  scene.add(tankMesh);
+
+  // ----- لوحات إعلانية -----
+  for (let k = 0; k < 5; k++) {
+    const t = billboardTex();
+    const bm = new THREE.MeshBasicMaterial({ map: t, color: new THREE.Color(2.4, 2.4, 2.4), toneMapped: true });
+    world.nightMats.push({ m: bm, base: 1.0 });
+    const list = bills.filter((_, i) => i % 5 === k);
+    list.forEach(([x, y, z, rot]) => {
+      const pl = new THREE.Mesh(new THREE.PlaneGeometry(14, 7), bm);
+      pl.position.set(x, y + 8.5, z); pl.rotation.y = rot;
+      const back = new THREE.Mesh(new THREE.BoxGeometry(14.4, 7.4, 0.3), new THREE.MeshStandardMaterial({ color: 0x1a1a22 }));
+      back.position.set(x, y + 8.5, z + (rot ? 0.2 : -0.2)); back.castShadow = true;
+      scene.add(pl, back);
+      for (const sx of [-4, 4]) {
+        const p = new THREE.Mesh(new THREE.BoxGeometry(0.4, 5, 0.4), new THREE.MeshStandardMaterial({ color: 0x333 }));
+        p.position.set(x + sx, y + 2.5, z); scene.add(p);
+      }
+    });
+  }
+
+  // ----- واجهات المحلات -----
+  const shopGeo = new THREE.PlaneGeometry(6, 4.5).translate(0, 2.25, 0);
+  const SHOP_TYPES = 6;
+  const shopBuckets = Array.from({ length: SHOP_TYPES }, () => []);
+  shops.forEach((s) => shopBuckets[Math.floor(Math.random() * SHOP_TYPES)].push(s));
+  shopBuckets.forEach((list) => {
+    const t = storefrontTex();
+    const m = new THREE.MeshStandardMaterial({ map: t.map, emissiveMap: t.emissive, emissive: 0xffffff, emissiveIntensity: 0.3, roughness: 0.5, metalness: 0.2 });
+    world.nightMats.push({ m, shop: true });
+    const im = new THREE.InstancedMesh(shopGeo, m, list.length);
+    list.forEach(([x, y, z, rot], i) => { dummy.position.set(x, y, z); dummy.rotation.set(0, rot, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); im.setMatrixAt(i, dummy.matrix); });
+    im.receiveShadow = true;
+    scene.add(im);
+  });
+
+  // ----- شجيرات -----
+  const bushMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0x2c7a38, roughness: 0.9 }), bushes.length);
+  bushes.forEach(([x, z, s], i) => { dummy.position.set(x, 0.3 + s * 0.5, z); dummy.scale.set(s, s * 0.8, s); dummy.rotation.set(0, rnd(0, 6), 0); dummy.updateMatrix(); bushMesh.setMatrixAt(i, dummy.matrix); });
+  bushMesh.castShadow = true;
+  scene.add(bushMesh);
+
+  // ----- خطوط الطريق -----
+  const dashGeo = new THREE.BoxGeometry(0.32, 0.02, 3.4);
+  const dashMat = new THREE.MeshStandardMaterial({ color: 0xf2e6a0, roughness: 0.6 });
+  const dashes = [];
+  for (let k = 0; k <= N; k++) {
+    const c = (k - N / 2) * P;
+    for (let t = -HALF + 4; t < HALF; t += 8) {
+      const d = (((t + HALF) % P) + P) % P;
+      if (Math.min(d, P - d) < 11) continue;
+      dashes.push([t, c, false]);
+      dashes.push([c, t, true]);
+    }
+  }
+  const dm = new THREE.InstancedMesh(dashGeo, dashMat, dashes.length);
+  dashes.forEach(([x, z, alongZ], i) => { dummy.position.set(x, 0.03, z); dummy.rotation.set(0, alongZ ? 0 : Math.PI / 2, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix(); dm.setMatrixAt(i, dummy.matrix); });
+  scene.add(dm);
+  const zebra = [];
+  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+    const p = nodePos(i, j);
+    for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if ((i === 0 && ax < 0) || (i === N && ax > 0) || (j === 0 && az < 0) || (j === N && az > 0)) continue;
+      for (let s = -6; s <= 6; s += 1.8) zebra.push([p.x + ax * 11.5 + (az !== 0 ? s : 0), p.z + az * 11.5 + (ax !== 0 ? s : 0), ax !== 0]);
+    }
+  }
+  const zm = new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 0.02, 3.4), new THREE.MeshStandardMaterial({ color: 0xe6e6e6, roughness: 0.55 }), zebra.length);
+  zebra.forEach(([x, z, alongX], i) => { dummy.position.set(x, 0.035, z); dummy.rotation.set(0, alongX ? 0 : Math.PI / 2, 0); dummy.updateMatrix(); zm.setMatrixAt(i, dummy.matrix); });
+  scene.add(zm);
+
+  // ----- نخيل حقيقي -----
+  for (let k = 0; k < 150; k++) {
+    const a = rnd(0, Math.PI * 2), r = rnd(HALF + 30, ISLAND - 10);
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     if (Math.abs(x) > HALF + 22 || Math.abs(z) > HALF + 22) palms.push([x, z]);
   }
-  // نخيل على أطراف الشوارع الخارجية
-  for (let t = -HALF; t <= HALF; t += 22) {
-    palms.push([t, -HALF - 14], [t, HALF + 14], [-HALF - 14, t], [HALF + 14, t]);
+  for (let t = -HALF; t <= HALF; t += 20) palms.push([t, -HALF - 14], [t, HALF + 14], [-HALF - 14, t], [HALF + 14, t]);
+  // على أرصفة الشوارع الرئيسية
+  for (let i = 0; i <= N; i++) for (let t = -HALF + 14; t < HALF; t += 40) {
+    const c = (i - N / 2) * P;
+    if (Math.abs(((t + HALF) % P)) < 14 || Math.abs(((t + HALF) % P) - P) < 14) continue;
+    if (Math.random() < 0.5) palms.push([t, c + (Math.random() < 0.5 ? 9.2 : -9.2)]); else palms.push([c + (Math.random() < 0.5 ? 9.2 : -9.2), t]);
   }
-  // instanced palms
-  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 6.5, 6);
-  trunkGeo.translate(0, 3.25, 0);
-  const leafGeo = new THREE.BoxGeometry(1.1, 0.07, 3.8);
-  leafGeo.translate(0, 0, 1.9);
-  const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshStandardMaterial({ color: 0x7d5a3a, roughness: 1 }), palms.length);
-  const leaves = new THREE.InstancedMesh(leafGeo, new THREE.MeshStandardMaterial({ color: 0x2f9a52, roughness: 0.8, side: THREE.DoubleSide }), palms.length * 7);
-  trunks.castShadow = true;
-  leaves.castShadow = true;
-  let li = 0;
-  palms.forEach(([x, z], i) => {
-    const sc = rnd(0.85, 1.3);
-    const gy = groundY(x, z);
-    dummy.position.set(x, gy, z);
-    dummy.rotation.set(0, rnd(0, 6.28), 0);
-    dummy.scale.setScalar(sc);
-    dummy.updateMatrix();
-    trunks.setMatrixAt(i, dummy.matrix);
-    for (let k = 0; k < 7; k++) {
-      dummy.position.set(x, gy + 6.4 * sc, z);
-      dummy.rotation.order = 'YXZ';
-      dummy.rotation.set(0.55 + rnd(-0.15, 0.15), (k * Math.PI * 2) / 7 + rnd(-0.2, 0.2), 0);
-      dummy.scale.setScalar(sc);
-      dummy.updateMatrix();
-      leaves.setMatrixAt(li++, dummy.matrix);
+  const trunkG = new THREE.CylinderGeometry(0.2, 0.34, 7, 8, 12, true);
+  {
+    const p = trunkG.attributes.position;
+    for (let i = 0; i < p.count; i++) { const y = p.getY(i) + 3.5; p.setZ(i, p.getZ(i) + 0.03 * y * y); p.setY(i, y); }
+    trunkG.computeVertexNormals();
+  }
+  const bark = barkTex(); bark.repeat.set(1, 3);
+  const trunks = new THREE.InstancedMesh(trunkG, new THREE.MeshStandardMaterial({ map: bark, roughness: 1 }), palms.length);
+  const frondG = new THREE.PlaneGeometry(1.7, 4.6, 1, 10).rotateX(-Math.PI / 2).translate(0, 0, 2.3);
+  {
+    const p = frondG.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const z = p.getZ(i);
+      p.setY(i, -0.085 * z * z);
+      p.setX(i, p.getX(i) * (1 - 0.65 * (z / 4.6)));
     }
-    dummy.rotation.order = 'XYZ';
-    addCollider({ x0: x - 0.45, x1: x + 0.45, z0: z - 0.45, z1: z + 0.45, h: 8 });
+    frondG.computeVertexNormals();
+  }
+  const fMap = frondTex();
+  const frondMat = new THREE.MeshStandardMaterial({ map: fMap, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.7, color: 0xffffff });
+  const FR = 10;
+  const fronds = new THREE.InstancedMesh(frondG, frondMat, palms.length * FR);
+  trunks.castShadow = fronds.castShadow = true;
+  const M1 = new THREE.Matrix4(), M2 = new THREE.Matrix4(), E = new THREE.Euler(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), SC = new THREE.Vector3();
+  let fi = 0;
+  palms.forEach(([x, z], i) => {
+    const sc = rnd(0.85, 1.3), yaw = rnd(0, 6.28), gy = groundY(x, z);
+    dummy.position.set(x, gy, z); dummy.rotation.set(0, yaw, 0); dummy.scale.setScalar(sc); dummy.updateMatrix();
+    trunks.setMatrixAt(i, dummy.matrix);
+    M1.copy(dummy.matrix);
+    for (let k = 0; k < FR; k++) {
+      V.set(0, 7, 0.03 * 49);
+      E.set(rnd(-0.1, 0.25) - (k % 2 ? 0.25 : 0), (k * Math.PI * 2) / FR + rnd(-0.15, 0.15), 0, 'YXZ');
+      Q.setFromEuler(E); SC.set(1, 1, rnd(0.85, 1.1));
+      M2.compose(V, Q, SC);
+      M2.premultiply(M1);
+      fronds.setMatrixAt(fi++, M2);
+    }
+    addCollider({ x0: x - 0.4, x1: x + 0.4, z0: z - 0.4, z1: z + 0.4, h: 8 });
   });
-  dummy.scale.setScalar(1);
-  scene.add(trunks, leaves);
+  scene.add(trunks, fronds);
 
-  // أعمدة إنارة
+  // ----- أعمدة إنارة + بقع الضوء -----
   const lampPos = [];
   for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
     const p = nodePos(i, j);
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) lampPos.push([p.x + sx * 9.5, p.z + sz * 9.5]);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) lampPos.push([p.x + sx * 9.5, p.z + sz * 9.5, Math.atan2(-sx, -sz)]);
   }
-  const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.1, 0.14, 6.5, 6), new THREE.MeshStandardMaterial({ color: 0x4a4d55 }), lampPos.length);
+  const poles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.1, 0.15, 6.8, 8), new THREE.MeshStandardMaterial({ color: 0x3d4048, roughness: 0.5, metalness: 0.7 }), lampPos.length);
+  poles.castShadow = true;
   world.lampMat = new THREE.MeshBasicMaterial({ color: 0x555555 });
-  const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(0.9, 0.2, 0.5), world.lampMat, lampPos.length);
-  lampPos.forEach(([x, z], i) => {
-    dummy.position.set(x, 3.55, z);
-    dummy.rotation.set(0, 0, 0);
-    dummy.updateMatrix();
-    poles.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(x, 6.7, z);
-    dummy.updateMatrix();
-    heads.setMatrixAt(i, dummy.matrix);
+  const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(0.8, 0.16, 0.45), world.lampMat, lampPos.length);
+  const pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ map: glowTex('rgba(255,190,110,0.9)'), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0, fog: false }), lampPos.length);
+  world.poolMat = pools.material;
+  lampPos.forEach(([x, z, rot], i) => {
+    dummy.scale.set(1, 1, 1);
+    dummy.position.set(x, 3.4, z); dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); poles.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(x, 6.9, z); dummy.rotation.set(0, rot, 0); dummy.updateMatrix(); heads.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(x - Math.sin(rot) * 3, 0.32, z - Math.cos(rot) * 3); dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); pools.setMatrixAt(i, dummy.matrix);
   });
-  scene.add(poles, heads);
+  scene.add(poles, heads, pools);
 
   world.minimapCanvas = buildMinimap(world);
   return world;

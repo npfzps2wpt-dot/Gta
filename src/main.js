@@ -5,260 +5,72 @@ import {
   nodePos, nearestNode, neighbors, groundY, pushOut, hitInfo, rayWorld, lineClear,
   buildWorld, MAPR, MAP_PX,
 } from './world.js';
+import { createSky } from './sky.js';
+import { createPost } from './post.js';
+import { makeHuman } from './people.js';
+import { makeCarMesh, CAR_TYPES, CAR_MATS, beamMat } from './carmodels.js';
 
 const $ = (id) => document.getElementById(id);
 const sound = new Sound();
 
 // =====================================================================
-// المشهد
+// المشهد والرسوميات
 // =====================================================================
 const canvas = $('view');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.62;
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xd8607a, 120, 760);
-const camera = new THREE.PerspectiveCamera(62, 1, 0.3, 2400);
+scene.fog = new THREE.FogExp2(0xd8607a, 0.00085);
+const camera = new THREE.PerspectiveCamera(62, 1, 0.3, 2600);
 scene.add(camera);
+// كل ما هو شفاف/سماء/ماء يوضع هنا ليُخفى أثناء حساب الـ AO
+const overlay = new THREE.Group();
+scene.add(overlay);
 
-function resize() {
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
+const skyC = createSky({ scene, renderer, camera, overlay });
+let world = buildWorld(scene, overlay);
+const miniStatic = world.minimapCanvas;
+const post = createPost(renderer, scene, camera, overlay);
+
+// جودة الرسوميات: 0 منخفضة .. 3 خارقة
+const QNAMES = ['منخفضة', 'متوسطة', 'عالية', 'خارقة (AO + انعكاسات)'];
+let quality = 3;
+try { const q = localStorage.getItem('neon_q'); if (q !== null) quality = clamp(+q, 0, 3); } catch (e) { /* */ }
+function applyQuality() {
+  post.setLevel(quality);
+  world.reflector.visible = quality >= 2;
+  const sz = quality >= 3 ? 4096 : quality >= 2 ? 2048 : 1024;
+  if (skyC.sun.shadow.mapSize.x !== sz) {
+    skyC.sun.shadow.mapSize.set(sz, sz);
+    if (skyC.sun.shadow.map) { skyC.sun.shadow.map.dispose(); skyC.sun.shadow.map = null; }
+  }
+  try { localStorage.setItem('neon_q', String(quality)); } catch (e) { /* */ }
 }
-window.addEventListener('resize', resize);
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  post.resize(w, h);
+}
+window.addEventListener('resize', () => { resize(); applyQuality(); });
 resize();
 
-// الإضاءة
-const hemi = new THREE.HemisphereLight(0xaaccff, 0x554466, 0.7);
-scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff0d0, 1.4);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-const SC = 85;
-Object.assign(sun.shadow.camera, { left: -SC, right: SC, top: SC, bottom: -SC, near: 1, far: 500 });
-sun.shadow.bias = -0.0006;
-sun.shadow.normalBias = 0.3;
-scene.add(sun, sun.target);
-
-// السماء
-const skyMat = new THREE.ShaderMaterial({
-  side: THREE.BackSide, depthWrite: false, fog: false,
-  uniforms: { top: { value: new THREE.Color() }, hor: { value: new THREE.Color() } },
-  vertexShader: 'varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
-  fragmentShader: 'varying vec3 vP; uniform vec3 top; uniform vec3 hor; void main(){ float h=normalize(vP).y; vec3 c=mix(hor,top,pow(clamp(h,0.0,1.0),0.55)); c=mix(c,hor*0.8,clamp(-h*4.0,0.0,1.0)); gl_FragColor=vec4(c,1.0);}',
-});
-const sky = new THREE.Mesh(new THREE.SphereGeometry(2000, 24, 16), skyMat);
-sky.renderOrder = -10;
-scene.add(sky);
-function glowTex(inner, outer) {
-  const c = document.createElement('canvas');
-  c.width = c.height = 128;
-  const g = c.getContext('2d');
-  const gr = g.createRadialGradient(64, 64, 4, 64, 64, 64);
-  gr.addColorStop(0, inner);
-  gr.addColorStop(0.35, inner);
-  gr.addColorStop(1, outer);
-  g.fillStyle = gr;
-  g.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(c);
-}
-const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex('rgba(255,235,190,1)', 'rgba(255,120,90,0)'), fog: false, depthWrite: false, transparent: true }));
-sunSprite.scale.set(700, 700, 1);
-scene.add(sunSprite);
-const moonSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex('rgba(235,240,255,1)', 'rgba(150,170,255,0)'), fog: false, depthWrite: false, transparent: true }));
-moonSprite.scale.set(260, 260, 1);
-scene.add(moonSprite);
-const starGeo = new THREE.BufferGeometry();
-{
-  const a = new Float32Array(900 * 3);
-  for (let i = 0; i < 900; i++) {
-    const u = Math.random() * 2 - 1, t = Math.random() * 6.283, r = Math.sqrt(1 - u * u);
-    const y = Math.abs(u);
-    a[i * 3] = Math.cos(t) * r * 1900; a[i * 3 + 1] = y * 1900; a[i * 3 + 2] = Math.sin(t) * r * 1900;
-  }
-  starGeo.setAttribute('position', new THREE.BufferAttribute(a, 3));
-}
-const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 5, sizeAttenuation: false, fog: false, transparent: true, opacity: 0, depthWrite: false }));
-scene.add(stars);
-
-// دورة النهار: [ساعة, سماء, أفق, ضباب, محيط, شمس, ليل]
-const hex = (h) => new THREE.Color(h);
-const KEYS = [
-  [0, 0x050a1f, 0x1a1446, 0x140f38, 0.3, 0.25, 1],
-  [5, 0x070d28, 0x2a1a55, 0x1c1445, 0.32, 0.25, 1],
-  [6.5, 0x4a5f9f, 0xff9a7a, 0xd89a8a, 0.55, 0.8, 0.4],
-  [9, 0x2f86e8, 0xa8dcff, 0xa8d4f0, 0.8, 1.6, 0],
-  [16.5, 0x2f86e8, 0xa8dcff, 0xa8d4f0, 0.8, 1.6, 0],
-  [18.5, 0x5a2f96, 0xff6a64, 0xd8607a, 0.6, 1.1, 0.3],
-  [20, 0x1c1450, 0x7a2a7a, 0x4a1f5e, 0.42, 0.4, 0.85],
-  [21.5, 0x050a1f, 0x1a1446, 0x140f38, 0.3, 0.25, 1],
-  [24, 0x050a1f, 0x1a1446, 0x140f38, 0.3, 0.25, 1],
-];
-const cTop = new THREE.Color(), cHor = new THREE.Color(), cFog = new THREE.Color();
 let nightF = 0;
-let world;
-const tmpC = new THREE.Color();
-function applyTime(h, focus) {
-  let k = 0;
-  while (k < KEYS.length - 2 && h >= KEYS[k + 1][0]) k++;
-  const a = KEYS[k], b = KEYS[k + 1];
-  const f = (h - a[0]) / (b[0] - a[0]);
-  cTop.copy(hex(a[1])).lerp(tmpC.copy(hex(b[1])), f);
-  cHor.copy(hex(a[2])).lerp(tmpC.copy(hex(b[2])), f);
-  cFog.copy(hex(a[3])).lerp(tmpC.copy(hex(b[3])), f);
-  const amb = lerp(a[4], b[4], f), sunI = lerp(a[5], b[5], f);
-  nightF = lerp(a[6], b[6], f);
-  skyMat.uniforms.top.value.copy(cTop);
-  skyMat.uniforms.hor.value.copy(cHor);
-  scene.fog.color.copy(cFog);
-  hemi.color.copy(cHor).lerp(hex(0xffffff), 0.35);
-  hemi.intensity = amb;
-  const ang = ((h - 5.5) / 13) * Math.PI;
-  const sd = new THREE.Vector3(Math.cos(ang), Math.sin(ang), 0.35).normalize();
-  const dayLit = sd.y > -0.05;
-  const L = dayLit ? sd : sd.clone().multiplyScalar(-1);
-  sun.position.set(focus.x + L.x * 220, Math.max(40, L.y * 220), focus.z + L.z * 220);
-  sun.target.position.set(focus.x, 0, focus.z);
-  sun.intensity = dayLit ? sunI : 0.3;
-  sun.color.set(dayLit ? (sd.y < 0.25 ? 0xffa070 : 0xfff0d8) : 0x8899ff);
-  sunSprite.position.copy(camera.position).addScaledVector(sd, 1700);
-  sunSprite.visible = sd.y > -0.12;
-  const md = sd.clone().multiplyScalar(-1);
-  moonSprite.position.copy(camera.position).addScaledVector(md, 1700);
-  moonSprite.visible = md.y > 0 && nightF > 0.5;
-  stars.material.opacity = clamp((nightF - 0.4) * 1.8, 0, 1);
-  stars.position.copy(camera.position);
-  sky.position.copy(camera.position);
-  if (world) {
-    const em = nightF * 1.1;
-    for (const m of world.bldgMats) m.emissiveIntensity = em;
-    world.lampMat.color.setRGB(0.3 + nightF * 1.0, 0.3 + nightF * 0.85, 0.2 + nightF * 0.4);
-  }
-}
-
-// =====================================================================
-// العالم
-// =====================================================================
-world = buildWorld(scene);
-const miniStatic = world.minimapCanvas;
-
-// =====================================================================
-// أدوات: مواد ونماذج
-// =====================================================================
-const matCache = new Map();
-function mat(color, extra) {
-  const k = color + (extra ? JSON.stringify(extra) : '');
-  if (!matCache.has(k)) matCache.set(k, new THREE.MeshStandardMaterial({ color, roughness: 0.7, ...extra }));
-  return matCache.get(k);
-}
 const basic = (c) => {
   const k = 'b' + c;
-  if (!matCache.has(k)) matCache.set(k, new THREE.MeshBasicMaterial({ color: c }));
-  return matCache.get(k);
+  if (!basicCache.has(k)) basicCache.set(k, new THREE.MeshBasicMaterial({ color: c }));
+  return basicCache.get(k);
 };
-const geoCache = new Map();
-function box(w, h, d, ty = 0) {
-  const k = [w, h, d, ty].join();
-  if (!geoCache.has(k)) {
-    const g = new THREE.BoxGeometry(w, h, d);
-    if (ty) g.translate(0, ty, 0);
-    geoCache.set(k, g);
-  }
-  return geoCache.get(k);
-}
-function mesh(g, m, x = 0, y = 0, z = 0) {
-  const o = new THREE.Mesh(g, m);
-  o.position.set(x, y, z);
-  o.castShadow = true;
-  return o;
-}
-
+const basicCache = new Map();
 const SKINS = [0xf1c8a0, 0xe0ac84, 0xc68863, 0x8d5a3b, 0x6b4128, 0xffdbb4];
 const SHIRTS = [0xff5fa2, 0x3cc8ff, 0xffd23c, 0x7dff7d, 0xffffff, 0xff7a3c, 0xa56bff, 0x2ee6c5, 0xe84a4a, 0xf0f0f0];
 const PANTS = [0x2b3a5a, 0x1c1c24, 0xd9d2c0, 0x3a2b2b, 0x4a5a7a, 0xeeeeee];
-
-function makeHuman(shirt, pants, skin, hair, cap) {
-  const g = new THREE.Group();
-  const legs = [];
-  for (const s of [-1, 1]) {
-    const l = new THREE.Group();
-    l.position.set(s * 0.17, 0.9, 0);
-    l.add(mesh(box(0.28, 0.9, 0.3, -0.45), mat(pants)));
-    g.add(l);
-    legs.push(l);
-  }
-  g.add(mesh(box(0.64, 0.72, 0.36), mat(shirt), 0, 1.27, 0));
-  g.add(mesh(box(0.32, 0.34, 0.32), mat(skin), 0, 1.8, 0));
-  g.add(mesh(box(0.34, 0.12, 0.34), mat(cap || hair), 0, 1.99, 0));
-  if (cap) g.add(mesh(box(0.34, 0.04, 0.2), mat(cap), 0, 1.95, 0.22));
-  const arms = [];
-  for (const s of [-1, 1]) {
-    const a = new THREE.Group();
-    a.position.set(s * 0.43, 1.58, 0);
-    a.add(mesh(box(0.2, 0.72, 0.22, -0.36), mat(shirt)));
-    a.add(mesh(box(0.18, 0.18, 0.2, -0.78), mat(skin)));
-    g.add(a);
-    arms.push(a);
-  }
-  const gun = mesh(box(0.08, 0.14, 0.42), mat(0x111111), 0, -0.78, 0.2);
-  arms[0].add(gun); // الذراع اليمنى (x=-0.43 في مجموعة تدور على y)
-  gun.visible = false;
-  return { group: g, legs, arms, gun };
-}
-
-const CAR_TYPES = {
-  sedan: { body: [1.9, 0.72, 4.4], cab: [1.6, 0.58, 2.3, -0.25], max: 33, acc: 14, hp: 100 },
-  sports: { body: [1.95, 0.55, 4.3], cab: [1.55, 0.46, 1.8, -0.35], max: 47, acc: 23, hp: 90 },
-  suv: { body: [2.05, 0.95, 4.7], cab: [1.85, 0.72, 2.8, -0.3], max: 29, acc: 11, hp: 130 },
-  van: { body: [2.05, 1.55, 4.9], cab: null, max: 25, acc: 9, hp: 140 },
-  taxi: { body: [1.9, 0.72, 4.4], cab: [1.6, 0.58, 2.3, -0.25], max: 32, acc: 14, hp: 100 },
-  police: { body: [1.95, 0.75, 4.5], cab: [1.65, 0.6, 2.3, -0.25], max: 40, acc: 18, hp: 120 },
-};
-const CAR_COLORS = [0xff3c5f, 0x2ee6e6, 0xffffff, 0x1c1c26, 0xffb02e, 0x3c7aff, 0x7dff7d, 0xa56bff, 0xe8e8e8, 0xff7a3c, 0x16a085, 0xcc2255];
-const glassMat = new THREE.MeshStandardMaterial({ color: 0x0c1830, roughness: 0.15, metalness: 0.6 });
-const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.32, 12).rotateZ(Math.PI / 2);
-const wheelMat = mat(0x111111);
-
-function makeCarMesh(type, color) {
-  const t = CAR_TYPES[type];
-  const g = new THREE.Group();
-  const [w, h, l] = t.body;
-  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.45 });
-  const body = mesh(box(w, h, l), bodyMat, 0, 0.42 + h / 2, 0);
-  g.add(body);
-  if (t.cab) {
-    const [cw, ch, cl, cz] = t.cab;
-    const cab = mesh(box(cw, ch, cl), glassMat, 0, 0.42 + h + ch / 2, cz);
-    g.add(cab);
-    const roof = mesh(box(cw + 0.02, 0.06, cl * 0.8), bodyMat, 0, 0.42 + h + ch, cz);
-    g.add(roof);
-  } else {
-    g.add(mesh(box(w - 0.1, 0.5, 0.05), glassMat, 0, 0.42 + h * 0.75, l / 2 + 0.01));
-  }
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-    const wh = mesh(wheelGeo, wheelMat, sx * (w / 2 - 0.05), 0.38, sz * l * 0.31);
-    g.add(wh);
-  }
-  for (const sx of [-1, 1]) {
-    g.add(mesh(box(0.36, 0.16, 0.06), basic(0xfff4c0), sx * (w / 2 - 0.35), 0.42 + h * 0.55, l / 2 + 0.02));
-    g.add(mesh(box(0.36, 0.14, 0.06), basic(0xcc1122), sx * (w / 2 - 0.35), 0.42 + h * 0.55, -l / 2 - 0.02));
-  }
-  const extra = {};
-  if (type === 'taxi') {
-    g.add(mesh(box(0.7, 0.2, 0.3), basic(0xffffaa), 0, 0.42 + h + t.cab[1] + 0.12, t.cab[3]));
-  }
-  if (type === 'police') {
-    const r = mesh(box(0.55, 0.16, 0.3), basic(0xff1133), -0.35, 0.42 + h + t.cab[1] + 0.1, t.cab[3]);
-    const b = mesh(box(0.55, 0.16, 0.3), basic(0x1133ff), 0.35, 0.42 + h + t.cab[1] + 0.1, t.cab[3]);
-    g.add(r, b);
-    extra.lightR = r;
-    extra.lightB = b;
-    g.add(mesh(box(w + 0.02, 0.28, 2.0), mat(0xffffff), 0, 0.42 + h * 0.35, -0.2)); // باب أبيض
-  }
-  return { group: g, bodyMat, ...extra };
-}
+const CAR_COLORS = [0xd0123a, 0x19b8c8, 0xf2f2f2, 0x14141c, 0xf0a020, 0x2a62e0, 0x38c24a, 0x8a4de0, 0xc8c8d0, 0xff6a20, 0x0e8a70, 0xd01a6a];
 
 // =====================================================================
 // الحالة العامة
@@ -286,7 +98,7 @@ const player = {
   weapon: 1, has: [true, true, false, false], ammo: [Infinity, 60, 0, 0],
   phase: 0, cd: 0, aimT: 0, punchT: 0, dead: false, hitFlash: 0, speed: 0,
 };
-const human = makeHuman(0xff5fa2, 0xf4f4f4, 0xe0ac84, 0x2a1a10);
+const human = makeHuman(0xff5fa2, 0xf4f4f4, 0xe0ac84, 0x2a1a10, null, true);
 human.gun.visible = true;
 scene.add(human.group);
 
@@ -390,7 +202,7 @@ function addFx(color, pos, size, life, opts = {}) {
   const m = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: opts.op ?? 1, depthWrite: false }));
   m.position.copy(pos);
   m.scale.setScalar(size);
-  scene.add(m);
+  overlay.add(m);
   fxList.push({ m, life, max: life, vel: opts.vel || new THREE.Vector3(), grow: opts.grow || 0, op: opts.op ?? 1, grav: opts.grav || 0 });
 }
 function updateFx(dt) {
@@ -402,7 +214,7 @@ function updateFx(dt) {
     if (f.grow) f.m.scale.addScalar(f.grow * dt);
     f.m.material.opacity = Math.max(0, (f.life / f.max) * f.op);
     if (f.life <= 0) {
-      scene.remove(f.m);
+      overlay.remove(f.m);
       f.m.material.dispose();
       fxList.splice(i, 1);
     }
@@ -411,17 +223,17 @@ function updateFx(dt) {
     const t = tracers[i];
     t.life -= dt;
     if (t.life <= 0) {
-      scene.remove(t.line);
+      overlay.remove(t.line);
       t.line.geometry.dispose();
       tracers.splice(i, 1);
     }
   }
 }
-const tracerMat = new THREE.LineBasicMaterial({ color: 0xffe9a0 });
+const tracerMat = new THREE.LineBasicMaterial({ color: new THREE.Color(4, 3.2, 1.6) });
 function addTracer(a, b) {
   const g = new THREE.BufferGeometry().setFromPoints([a, b]);
   const line = new THREE.Line(g, tracerMat);
-  scene.add(line);
+  overlay.add(line);
   tracers.push({ line, life: 0.06 });
 }
 const flashLight = new THREE.PointLight(0xffaa44, 0, 60);
@@ -475,7 +287,7 @@ function spawnCar(type, x, z, heading, driver, color) {
   const m = makeCarMesh(type, col);
   scene.add(m.group);
   const car = {
-    type, t, mesh: m.group, bodyMat: m.bodyMat, lightR: m.lightR, lightB: m.lightB,
+    type, t, mesh: m.group, bodyMat: m.paint, lightR: m.lightR, lightB: m.lightB, wheels: m.wheels, tails: m.tails, beam: m.beam, braking: false, skidT: 0, wheelSpin: 0,
     pos: new THREE.Vector3(x, groundY(x, z), z), v: { x: 0, z: 0 }, heading,
     hp: t.hp, driver, exploded: false, len: t.body[2], wid: t.body[0],
     nav: null, cruise: rnd(10, 15), stuck: 0, rev: 0, steerV: 0, speed: 0, smokeT: 0, age: 0, cops: 0, deadT: 0,
@@ -513,6 +325,7 @@ function stepCar(c, dt, throttle, steer, hand) {
     vf *= Math.exp(-0.45 * dt);
   }
   vf *= Math.exp(-0.06 * dt);
+  c.braking = (throttle < 0 && vf > 0.6) || hand;
   const grip = hand ? 1.4 : 7.5;
   vl *= Math.exp(-grip * dt);
   if (hand) vf *= Math.exp(-0.9 * dt);
@@ -617,6 +430,7 @@ function blowCar(c) {
   c.driver = null;
   c.hp = 0;
   if (c.lightR) { c.lightR.visible = false; c.lightB.visible = false; }
+  if (c.beam) c.beam.visible = false;
 }
 function lastAttackByPlayer(c) { return c.pos.distanceTo(player.pos) < 60; }
 
@@ -707,8 +521,8 @@ function aiCar(c, dt) {
   // أضواء الشرطة
   if (police) {
     const on = Math.floor(G.time * 6) % 2 === 0;
-    c.lightR.material = basic(on ? 0xff1133 : 0x330008);
-    c.lightB.material = basic(on ? 0x000a33 : 0x1a44ff);
+    c.lightR.material = on ? CAR_MATS.sirenR : CAR_MATS.sirenRoff;
+    c.lightB.material = on ? CAR_MATS.sirenBoff : CAR_MATS.sirenB;
   }
   // الشرطي ينزل
   if (footStop && Math.abs(c.speed) < 2 && c.cops < Math.min(4, 1 + G.stars) && Math.random() < dt * 0.8) {
@@ -998,6 +812,8 @@ function updatePlayer(dt) {
   const kbd = (c) => keys.has(c);
   if (pressed.has('KeyF')) tryEnterExit();
   for (let i = 0; i < 4; i++) if (pressed.has('Digit' + (i + 1)) && player.has[i]) { player.weapon = i; say(WEAPONS[i].name, 1); }
+  if (pressed.has('KeyG')) { quality = (quality + 1) % 4; applyQuality(); say('الرسوميات: ' + QNAMES[quality], 2); }
+  if (pressed.has('KeyR')) { rainTarget = rainTarget > 0.5 ? 0 : 1; say(rainTarget ? 'بدأ المطر' : 'توقف المطر', 2); }
   if (pressed.has('KeyM')) { sound.setMusic(!sound.musicOn); say(sound.musicOn ? 'الراديو: تشغيل' : 'الراديو: إيقاف', 1.2); }
 
   const inCar = player.inCar;
@@ -1202,7 +1018,7 @@ function makeBeam(color, r = 2.4) {
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.4;
   g.add(beam, ring);
-  scene.add(g);
+  overlay.add(g);
   return g;
 }
 
@@ -1654,6 +1470,146 @@ function lastStep(dt) {
   sound.siren(Math.max(0, siren));
 }
 
+// =====================================================================
+// الطقس، الليل، تأثيرات السيارات
+// =====================================================================
+let rain = 0, rainTarget = 0;
+const RAIN_N = 1800;
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(RAIN_N * 6);
+const rainVel = new Float32Array(RAIN_N);
+for (let i = 0; i < RAIN_N; i++) {
+  const x = rnd(-40, 40), y = rnd(0, 40), z = rnd(-40, 40);
+  rainPos.set([x, y, z, x, y - 1.4, z], i * 6);
+  rainVel[i] = rnd(28, 42);
+}
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainLines = new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({ color: 0xaecbe8, transparent: true, opacity: 0.0, depthWrite: false, fog: false }));
+rainLines.frustumCulled = false;
+overlay.add(rainLines);
+function updateRain(dt) {
+  rain = lerp(rain, rainTarget, 1 - Math.exp(-0.5 * dt));
+  rainLines.visible = rain > 0.05;
+  rainLines.material.opacity = rain * 0.55;
+  if (!rainLines.visible) return;
+  const cx = camera.position.x, cy = camera.position.y, cz = camera.position.z;
+  const p = rainPos;
+  for (let i = 0; i < RAIN_N; i++) {
+    const o = i * 6;
+    p[o + 1] -= rainVel[i] * dt;
+    p[o + 4] = p[o + 1] - 1.4;
+    if (p[o + 1] < 0) {
+      p[o] = rnd(-40, 40); p[o + 1] = rnd(30, 42); p[o + 2] = rnd(-40, 40);
+      p[o + 3] = p[o]; p[o + 5] = p[o + 2];
+    }
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+  rainLines.position.set(cx, 0, cz);
+  void cy;
+}
+
+function applyTime(h, focus, dt) {
+  skyC.update(h, focus, dt, rain, G.time);
+  nightF = skyC.nightF;
+  const n = nightF;
+  for (const m of world.bldgMats) m.emissiveIntensity = n * 1.25;
+  for (const o of world.nightMats) {
+    if (o.shop) o.m.emissiveIntensity = 0.15 + n * 1.3;
+    else o.m.color.setScalar(0.9 + n * 1.6);
+  }
+  world.lampMat.color.setRGB(0.35 + n * 3.2, 0.3 + n * 2.3, 0.2 + n * 1.0);
+  world.poolMat.opacity = n * 0.55;
+  beamMat.opacity = n * 0.55;
+  CAR_MATS.head.emissiveIntensity = 0.8 + n * 7;
+  CAR_MATS.tail.emissiveIntensity = 1.2 + n * 3;
+  renderer.toneMappingExposure = lerp(0.55, 0.8, n) * (1 - rain * 0.15);
+  if (world.blink) for (const b of world.blink) b.visible = Math.floor(G.time * 1.2) % 2 === 0;
+  world.waterNormal.offset.set(G.time * 0.004, G.time * 0.0025);
+  world.roadMat.roughness = lerp(0.55, 0.3, rain);
+  const u = world.reflector.material.uniforms;
+  u.uWet.value = lerp(0.55, 1, rain);
+  u.uTime.value = G.time;
+  u.uIntensity.value = lerp(1.1, 1.6, n);
+  const gu = post.grade.uniforms;
+  gu.uTime.value = G.time % 100;
+  gu.uNight.value = n;
+  gu.uRain.value = rain;
+  const sp = player.inCar ? Math.hypot(player.inCar.v.x, player.inCar.v.z) : 0;
+  gu.uSpeed.value = lerp(gu.uSpeed.value, clamp((sp - 22) / 28, 0, 1), 1 - Math.exp(-4 * (dt || 0.016)));
+  gu.uHit.value = player.hitFlash * 0.8 + (player.hp < 30 ? 0.25 : 0);
+}
+
+// آثار الإطارات
+const SKID_N = 220;
+const skidGeo = new THREE.PlaneGeometry(0.3, 1.1).rotateX(-Math.PI / 2);
+const skidMat = new THREE.MeshBasicMaterial({ color: 0x050505, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+const skids = new THREE.InstancedMesh(skidGeo, skidMat, SKID_N);
+skids.frustumCulled = false;
+const skidM = new THREE.Matrix4();
+const zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
+for (let i = 0; i < SKID_N; i++) skids.setMatrixAt(i, zeroM);
+scene.add(skids);
+let skidI = 0;
+function addSkid(x, z, heading) {
+  dummyO.position.set(x, 0.045, z);
+  dummyO.rotation.set(0, heading, 0);
+  dummyO.updateMatrix();
+  skids.setMatrixAt(skidI, dummyO.matrix);
+  skidI = (skidI + 1) % SKID_N;
+  skids.instanceMatrix.needsUpdate = true;
+}
+const dummyO = new THREE.Object3D();
+
+// مصابيح السيارة الأمامية الحقيقية (للاعب)
+const headSpots = [];
+for (let i = 0; i < 2; i++) {
+  const sp = new THREE.SpotLight(0xfff0d0, 0, 90, 0.5, 0.6, 1.4);
+  sp.castShadow = false;
+  scene.add(sp, sp.target);
+  headSpots.push(sp);
+}
+function updateHeadSpots() {
+  const c = player.inCar;
+  for (let i = 0; i < 2; i++) {
+    const sp = headSpots[i];
+    if (!c || nightF < 0.2) { sp.intensity = 0; continue; }
+    const fx = Math.sin(c.heading), fz = Math.cos(c.heading), rx = -fz, rz = fx;
+    const s = i ? 1 : -1;
+    sp.position.set(c.pos.x + fx * 2 + rx * 0.6 * s, c.pos.y + 0.8, c.pos.z + fz * 2 + rz * 0.6 * s);
+    sp.target.position.set(c.pos.x + fx * 30 + rx * 1.2 * s, 0, c.pos.z + fz * 30 + rz * 1.2 * s);
+    sp.intensity = 450 * nightF;
+  }
+}
+
+function carVisuals(c, dt) {
+  const sp = Math.hypot(c.v.x, c.v.z);
+  c.wheelSpin += (c.speed / 0.37) * dt;
+  for (const w of c.wheels) {
+    w.spin.rotation.x = c.wheelSpin;
+    if (w.front) w.steer.rotation.y = c.steerV * 0.5;
+  }
+  if (c.tails) {
+    const want = c.braking && c.driver ? CAR_MATS.brake : CAR_MATS.tail;
+    if (c.tails[0].material !== want) for (const t of c.tails) t.material = want;
+  }
+  if (c.beam) c.beam.visible = nightF > 0.25 && !!c.driver && !c.exploded && c.pos.distanceToSquared(camera.position) < 90000;
+  // انزلاق ودخان الإطارات
+  const slide = Math.abs(c.lat || 0);
+  if ((slide > 3.2 || (c.braking && sp > 14)) && sp > 6 && !c.exploded && c.driver) {
+    c.skidT -= dt;
+    if (c.skidT <= 0) {
+      c.skidT = 0.045;
+      const fx = Math.sin(c.heading), fz = Math.cos(c.heading), rx = fz, rz = -fx;
+      const bx = c.pos.x - fx * c.len * 0.31, bz = c.pos.z - fz * c.len * 0.31;
+      for (const s of [-1, 1]) {
+        const px = bx + rx * s * (c.wid / 2 - 0.12), pz = bz + rz * s * (c.wid / 2 - 0.12);
+        addSkid(px, pz, c.heading + Math.atan2(c.lat, c.speed) * 0.0);
+        if (Math.random() < 0.5) addFx(0xcfcfcf, new THREE.Vector3(px, 0.3, pz), rnd(0.25, 0.5), 0.9, { vel: new THREE.Vector3(rnd(-0.5, 0.5), rnd(0.4, 1.2), rnd(-0.5, 0.5)), grow: 2.2, op: 0.35 });
+      }
+    }
+  }
+}
+
 function update(dt) {
   G.time += dt;
   G.hour = (G.hour + dt / 2.2 / 60) % 24; // يوم كامل = 52 دقيقة تقريباً
@@ -1713,6 +1669,7 @@ function update(dt) {
     c.mesh.rotation.y = c.heading;
     // ميلان خفيف
     c.mesh.rotation.z = clamp(-(c.lat || 0) * 0.012, -0.08, 0.08);
+    carVisuals(c, dt);
   }
   for (const p of peds.slice()) pedStep(p, dt);
   updateWanted(dt);
@@ -1724,9 +1681,11 @@ function update(dt) {
   if (flashT > 0) { flashT -= dt; flashLight.intensity = Math.max(0, flashT / 0.35) * 400; } else flashLight.intensity = 0;
   lastStep(dt);
   updateCamera(dt);
-  applyTime(G.hour, player.inCar ? player.inCar.pos : player.pos);
+  updateRain(dt);
+  applyTime(G.hour, player.inCar ? player.inCar.pos : player.pos, dt);
+  updateHeadSpots();
   if (human.group.visible && !player.dead) { /* المجسم */ }
-  world.water.position.y = -0.7 + Math.sin(G.time * 0.8) * 0.08;
+  world.water.position.y = -0.8 + Math.sin(G.time * 0.8) * 0.08;
   pressed = new Set();
 }
 
@@ -1746,9 +1705,29 @@ function frame(now) {
     const a = G.time * 0.08;
     camera.position.set(Math.cos(a) * 160, 70, Math.sin(a) * 160);
     camera.lookAt(0, 30, 0);
-    applyTime(G.hour, { x: 0, z: 0 });
+    applyTime(G.hour, { x: 0, z: 0 }, dt);
   }
-  renderer.render(scene, camera);
+  govern(dt);
+  if (quality >= 1) post.composer.render(dt); else renderer.render(scene, camera);
+}
+
+// حاكم الأداء: يخفّض الجودة تلقائياً إذا كان الأداء ضعيفاً
+let gvT = 0, gvN = 0, gvWarm = 4;
+function govern(dt) {
+  if (!G.started || !G.running || window.__noGovern) return;
+  gvWarm -= dt;
+  if (gvWarm > 0) return;
+  gvT += dt; gvN++;
+  if (gvT > 3) {
+    const fps = gvN / gvT;
+    gvT = 0; gvN = 0;
+    if (fps < 26 && quality > 0) {
+      quality--;
+      applyQuality();
+      say('تم خفض الرسوميات تلقائياً: ' + QNAMES[quality], 3);
+      gvWarm = 3;
+    }
+  }
 }
 
 // البداية
@@ -1763,10 +1742,12 @@ function initWorld() {
   for (let i = 0; i < 30; i++) { spawnCrowd(); }
   for (let i = 0; i < 26; i++) spawnTraffic(false);
   for (let i = 0; i < 2; i++) spawnTraffic(true);
-  applyTime(G.hour, player.pos);
+  applyTime(G.hour, player.pos, 0.1);
+  skyC.updateEnv();
+  applyQuality();
 }
 initWorld();
 requestAnimationFrame(frame);
 
 // واجهة للاختبار والتصحيح
-window.__game = { G, player, cars, peds, scene, camera, mouse, keys, startMission, spots, addHeat, get mission() { return mission; } };
+window.__game = { cam, setRain: (v) => { rainTarget = v; }, G, player, cars, peds, scene, camera, mouse, keys, startMission, spots, addHeat, get mission() { return mission; } };
